@@ -6,7 +6,7 @@ Requires `svgpathtools` and `numpy`.
 The fitCurves folder is a submodule, so make sure to include the `--recurse-submodules` flag when `git clone`'ing this  repo.
 
 ## Why does this program need to exist?
-https://www.calligrapher.ai/ provides an easy way to generate handwriting for arbitrary text. I wanted to be able to send that information to my 3D printer and use it as a plotter to write in a way that mimics human handwriting. However, while there are lots of programs to turn an SVG file (which the website will generate) into GCODE, there were several issues:
+https://www.calligrapher.ai/ (alternate [Wayback Link](https://web.archive.org/web/20240924102434/https://www.calligrapher.ai/)) provides an easy way to generate handwriting for arbitrary text. I wanted to be able to send that information to my 3D printer and use it as a plotter to write in a way that mimics human handwriting. However, while there are lots of programs to turn an SVG file (which the website will generate) into GCODE, there were several issues:
 - The website's SVG output outlines and then fills each stroke, so converted GCODE will trace the outline of the strokes, which does not mimic human handwriting.
 - The [original code repo](https://github.com/sjvasquez/handwriting-synthesis) it's ported from does output stroke lines (based on the provided example outputs), but it's so old that I couldn't figure out how to get it to compile/run after several hours of trying.
 - I tried a couple updated forks of that repo and couldn't get them to run either (my complete lack of ML coding experience probably contributed).
