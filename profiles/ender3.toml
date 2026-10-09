@@ -1,0 +1,35 @@
+# Example profile: Creality Ender 3 with a pen holder on the hotend.
+#
+# pen_down_z is the single most important number here, and it depends on how your pen is
+# mounted. Find it by homing, jogging Z down until the pen just marks the paper, and reading
+# the value off the display. Start high and work down.
+#
+# Run `./handwrite.py ... --dry-run-z 5` first to watch the motion without touching paper.
+
+name = "ender3"
+
+pen_down_z   = 0.6      # pen touches the paper
+pen_up_z     = 3.0      # clears the paper between strokes
+safe_z       = 15.0     # clear of everything, used at start and end
+
+feed_draw    = 1500     # mm/min while drawing; slow enough that ink keeps up
+feed_travel  = 6000     # mm/min between strokes
+feed_z       = 900      # mm/min for pen lifts
+
+origin       = [20.0, 20.0]     # bottom-left corner of the page, in bed coordinates
+bed          = [220.0, 220.0]   # refuse to write G-code that leaves the bed
+park         = [0.0, 200.0]     # somewhere out of the way to finish
+
+flip_y       = true     # page top is away from you, the usual way to lay paper on a bed
+pen_dwell_ms = 0        # raise to ~100 if a spring-loaded pen needs time to settle
+
+preamble = [
+  "G21",        # millimetres
+  "G90",        # absolute positioning
+  "M107",       # part fan off
+  "G28",        # home all axes -- remove if you position the pen by hand
+]
+
+postamble = [
+  "M84",        # steppers off
+]

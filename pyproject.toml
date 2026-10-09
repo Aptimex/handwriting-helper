@@ -1,0 +1,20 @@
+[project]
+name = "handwriting-helper"
+version = "0.2.0"
+description = "Turn text into plotter G-code that mimics human handwriting"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "playwright>=1.40",
+    "numpy>=1.24",
+]
+
+[project.scripts]
+handwrite = "handwriting_helper.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["handwriting_helper"]

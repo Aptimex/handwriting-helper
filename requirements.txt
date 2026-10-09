@@ -1,0 +1,6 @@
+# Core pipeline.
+playwright>=1.40      # drives the offline calligrapher.ai copy in headless Chromium
+numpy>=1.24           # used by the fitCurves submodule for --smooth
+
+# After installing, fetch the browser once:
+#     playwright install chromium

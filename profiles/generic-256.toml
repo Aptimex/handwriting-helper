@@ -1,0 +1,40 @@
+# Generic profile for a 256 x 256 mm bed, which most current machines in that class use.
+#
+# pen_down_z is the one number you must set yourself: it depends entirely on how your pen is
+# mounted. Home the machine, jog Z down until the pen just marks the paper, and use that
+# reading. Start high and work down.
+#
+# Check the motion before trusting it:
+#     ./handwrite.py "test" -o out.gcode --profile generic-256 --dry-run-z 5
+#     tools/gcode_preview.py out.gcode -o out.preview.svg
+
+name = "generic-256"
+
+pen_down_z   = 1.0      # pen touches the paper -- measure this for your own pen holder
+pen_up_z     = 3.5      # clears the paper between strokes
+safe_z       = 20.0     # clear of everything, used at the start and the end
+
+feed_draw    = 2400     # mm/min while drawing
+feed_travel  = 9000     # mm/min between strokes
+feed_z       = 1200     # mm/min for pen lifts
+
+origin       = [18.0, 18.0]     # bottom-left corner of the page, in bed coordinates
+bed          = [256.0, 256.0]
+park         = [128.0, 250.0]   # back centre, out of the way
+
+flip_y       = true     # page top is away from you, the usual way to lay paper on a bed
+pen_dwell_ms = 0        # raise to ~100 if a spring-loaded pen needs time to settle
+
+# A 256 x 256 bed fits A5 (148 x 210) comfortably and A4 (210 x 297) not at all.
+# Use --page a5, --page fit, or a custom size such as --page 200x200.
+
+preamble = [
+  "G21",        # millimetres
+  "G90",        # absolute positioning
+  "M107",       # part fan off
+  "G28",        # home all axes -- remove if you position the pen by hand
+]
+
+postamble = [
+  "M84",        # steppers off
+]
