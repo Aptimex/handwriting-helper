@@ -21,11 +21,12 @@ sys.path.insert(0, str(ROOT))
 
 from handwriting_helper.gcode_out import (
     BedLimitError, ProfileError, flatten, load_profile, to_machine, write_gcode)
+from handwriting_helper.generate import _word_ends
 from handwriting_helper.layout import (
     DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, parse_page)
 from handwriting_helper.strokes import (
-    Document, MAX_DRAW_CHARS, estimate_x_height, json2points, reflow, simplify,
-    split_chunks, wrap_text)
+    Document, Line, estimate_x_height, paragraphs, reflow, simplify, split_pen_flags)
+from handwriting_helper import styles
 from handwriting_helper.svg_out import fit_beziers, write_svg
 
 FAILURES = []
@@ -43,37 +44,63 @@ def section(title):
     print("\n{}".format(title))
 
 
-def test_wrapping():
-    section("text wrapping")
-    lines = wrap_text("a " * 60)
-    check("every line is within the requested width",
-          all(len(l) <= MAX_DRAW_CHARS for l in lines),
-          max((len(l) for l in lines), default=0))
-    check("blank lines are preserved", wrap_text("one\n\ntwo") == ["one", "", "two"])
-    check("an over-long word is hard split",
-          all(len(l) <= 10 for l in wrap_text("x" * 35, width=10)))
-    check("trailing blank lines are dropped", wrap_text("hi\n\n\n") == ["hi"])
-    check("a line may exceed the model's draw limit",
-          len(wrap_text("word " * 40, width=90)[0]) > MAX_DRAW_CHARS)
-
-
-def test_chunking():
-    section("chunking and reflow")
-    text = "the quick brown fox jumps over the lazy dog and then keeps on running"
-    chunks = split_chunks(text)
-    check("every chunk fits the model's input limit",
-          all(len(c) <= MAX_DRAW_CHARS for c in chunks),
-          [len(c) for c in chunks])
-    check("chunks rejoin to the original text", " ".join(chunks) == text)
-    check("a short line is a single chunk", split_chunks("short") == ["short"])
-    check("an over-long word is hard split",
-          all(len(c) <= MAX_DRAW_CHARS for c in split_chunks("x" * 130)))
-
+def test_paragraphs():
+    section("paragraphs")
     flowed = reflow("one\ntwo\n\nthree\nfour\n")
     check("a paragraph is joined onto one line", flowed == "one two\n\nthree four", repr(flowed))
-    check("a paragraph break survives reflow",
-          wrap_text(flowed, width=40) == ["one two", "", "three four"])
     check("runs of blank lines collapse", reflow("a\n\n\n\nb") == "a\n\nb")
+    check("paragraphs become word lists with a gap between",
+          paragraphs("one\ntwo\n\nthree") == [["one", "two"], None, ["three"]])
+    check("--keep-breaks keeps every input line",
+          paragraphs("one\ntwo\n\nthree", keep_breaks=True)
+          == [["one"], ["two"], None, ["three"]])
+    check("leading and trailing blank lines are dropped",
+          paragraphs("\n\nhi\n\n\n", keep_breaks=True) == [["hi"]])
+
+
+def _points(spec):
+    '''
+    Synthetic draw: (attended_position, pen_up) pairs, one point per pair, x advancing by one.
+    Attended position 0 is the start token, so character i of the text is position i+1.
+    '''
+    return [(float(i), 0.0, pen, att) for i, (att, pen) in enumerate(spec)]
+
+
+def test_segmentation():
+    section("word segmentation")
+    # "ab cd": a=1 b=2 space=3 c=4 d=5
+    pts = _points([(1, 0), (2, 0), (2, 1), (3, 0), (4, 0), (5, 0), (5, 1)])
+    check("each word ends at its last pen-up", _word_ends(pts, "ab cd") == [2, 6],
+          _word_ends(pts, "ab cd"))
+
+    # "I wo": the pen lifts after "I" while attention is still on it, then "w" starts
+    # before the next lift. The cut belongs at the first lift, not after the "w".
+    pts = _points([(1, 0), (1, 1), (2, 0), (3, 0), (3, 1), (4, 0), (4, 1)])
+    check("a cut never takes the start of the next word",
+          _word_ends(pts, "I wo")[0] == 1, _word_ends(pts, "I wo"))
+
+    # Attention dropping back to the start token is noise, not the model going back.
+    pts = _points([(1, 0), (0, 0), (2, 1), (0, 0), (4, 0), (5, 1)])
+    check("start-token blips are ignored", _word_ends(pts, "ab cd") == [2, 5],
+          _word_ends(pts, "ab cd"))
+
+    pts = _points([(1, 0), (2, 1), (3, 0)])
+    check("in a draw stopped early, a word only counts once the next has begun",
+          _word_ends(pts, "ab cd", finished=False) == [],
+          _word_ends(pts, "ab cd", finished=False))
+    pts = _points([(1, 0), (2, 1), (4, 0)])
+    check("a last word the draw was stopped in is left out",
+          _word_ends(pts, "ab cd", finished=False) == [1],
+          _word_ends(pts, "ab cd", finished=False))
+    # The model ran on past the end instead of stopping: the scribble is not kept.
+    pts = _points([(1, 0), (2, 1), (4, 0), (5, 0), (6, 1), (6, 0), (6, 0), (6, 1)])
+    check("a run-on after the last word is cut off",
+          _word_ends(pts, "ab cd", finished=False) == [1, 4],
+          _word_ends(pts, "ab cd", finished=False))
+
+    check("pen flags split strokes",
+          split_pen_flags([(0, 0, 0), (1, 0, 1), (2, 0, 0), (3, 0, 0)])
+          == [[(0, 0), (1, 0)], [(2, 0), (3, 0)]])
 
 
 def test_simplify():
@@ -83,20 +110,6 @@ def test_simplify():
     check("collinear points are dropped", len(out) == 3, out)
     check("endpoints are kept", out[0] == stroke[0] and out[-1] == stroke[-1])
     check("a tolerance of 0 is a no-op", simplify(stroke, 0) == stroke)
-
-
-def test_parse():
-    section("legacy point-array parsing")
-    sample = ROOT / "input" / "sample-points.json"
-    if not sample.is_file():
-        check("input/sample-points.json exists", False)
-        return
-    segments = json2points(sample.read_text())
-    check("the sample parses into strokes", len(segments) > 5, len(segments))
-    check("no single-point strokes survive", all(len(s) >= 2 for s in segments))
-    check("array form parses the same as the object form",
-          json2points([[0, 0, 0], [1, 1, 1]]) == json2points('[{"0":0,"1":0,"2":0},'
-                                                             '{"0":1,"1":1,"2":1}]'))
 
 
 def _sample_document():
@@ -112,8 +125,10 @@ def test_layout():
     if document is None:
         check("input/sample.strokes.json exists", False)
         return
+    _raises("a strokes file from an older version is rejected", ValueError,
+            Document.from_json, '{"version": 1, "lines": []}')
 
-    page = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
+    page, = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
     check("the page is A4", (page.width_mm, page.height_mm) == (210.0, 297.0))
     check("x-height is honoured", abs(page.x_height_mm - 3.0) < 1e-9)
     check("the default line pitch follows the x-height",
@@ -123,20 +138,37 @@ def test_layout():
     box = page.bbox()
     check("ink stays inside the page", 0 < box[0] and box[2] < 210 and box[3] < 297, box)
 
-    doubled = layout(document, page="a4", x_height_mm=6.0, warn=False)
+    doubled, = layout(document, page="a4", x_height_mm=6.0, warn=False)
     check("doubling the x-height doubles the ink",
           abs(_width(doubled) / _width(page) - 2.0) < 0.01)
 
-    fitted = layout(document, page="fit", margin_mm=5, warn=False)
+    fitted, = layout(document, page="fit", margin_mm=5, warn=False)
     fbox = fitted.bbox()
     check("'fit' crops to the ink plus the margin",
           abs(fbox[0] - 5) < 0.6 and abs(fitted.width_mm - fbox[2] - 5) < 0.6, fbox)
+
+    # Pagination: 30 lines with a gap in the middle, on a page that holds far fewer.
+    line = document.lines[1]
+    blank = Line(text="", blank=True)
+    long_doc = Document(lines=[line] * 15 + [blank] + [line] * 15,
+                        x_height_units=document.x_height_units)
+    pages = layout(long_doc, page="80x60", margin_mm=5, x_height_mm=2.0, warn=False)
+    check("a long text runs onto several pages", len(pages) > 2, len(pages))
+    inside = all(p.bbox()[1] > 0 and p.bbox()[3] < 60 for p in pages)
+    check("every page's ink stays on that page", inside)
+    total = sum(len(p.strokes) for p in pages)
+    check("no line is lost between pages", total == 30 * len(line.strokes),
+          "{} vs {}".format(total, 30 * len(line.strokes)))
+    tops = [round(p.bbox()[1], 6) for p in pages]
+    check("every page starts on its first baseline", len(set(tops)) == 1, tops)
 
     check("a4 and letter are known", parse_page("letter") == (215.9, 279.4))
     check("WxH parses", parse_page("120x80") == (120.0, 80.0))
     _raises("an unknown page size is rejected", LayoutError, parse_page, "a9")
     _raises("a bad alignment is rejected", LayoutError,
             layout, document, align="middle", warn=False)
+    _raises("a page too short for one line is rejected", LayoutError,
+            layout, document, page="80x10", margin_mm=4, warn=False)
 
 
 def _width(page):
@@ -178,7 +210,7 @@ def test_output():
     document = _sample_document()
     if document is None:
         return
-    page = layout(document, page="fit", margin_mm=5, warn=False)
+    page, = layout(document, page="fit", margin_mm=5, warn=False)
     profile = load_profile("ender3")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -214,78 +246,70 @@ def test_output():
               small["points"] < stats["points"] * 0.75,
               "{} -> {}".format(stats["points"], small["points"]))
 
-        big = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
+        big, = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
         _raises("a page that overruns the bed is refused", BedLimitError,
                 write_gcode, big, Path(tmp) / "big.gcode", profile)
 
 
+def test_style_table():
+    section("style table")
+    missing = [n for n in range(80) if styles.lookup(n) is None]
+    check("every style has a measured size", not missing, missing)
+    sizes = [styles.lookup(n)[0] for n in range(80) if styles.lookup(n)]
+    check("styles really do differ in size", max(sizes) / min(sizes) > 2.5,
+          "{:.1f}..{:.1f}".format(min(sizes), max(sizes)))
+
+
 def test_online(args):
     section("generation (headless browser)")
-    from handwriting_helper.generate import generate
+    import statistics
+    from handwriting_helper.generate import Generator, generate
 
-    first = generate(["repeatable"], style=7, seed=4242, calibrate=False)
-    second = generate(["repeatable"], style=7, seed=4242, calibrate=False)
+    first = generate("repeatable", width_units=400, style=7, seed=4242)
+    second = generate("repeatable", width_units=400, style=7, seed=4242)
     check("a seed makes generation reproducible",
           first.lines[0].strokes == second.lines[0].strokes)
+    check("the style's size comes from the table",
+          first.x_height_units == styles.lookup(7)[0])
 
-    # The site scales glyphs by min(105/n, 11), so a short line is drawn much larger than a
-    # long one. Undoing that is the whole point of the normalisation in generate.py, and this
-    # is the check that it works. Both lines are x-height letters only so the measurements
-    # are comparable; a mix of ascenders and descenders would swamp the signal. Each is
-    # measured over several seeds, because a single sample of this model carries a spread of
-    # its own that is larger than the effect being tested.
-    import statistics
+    # Sampling straight from the model means nothing depends on line length -- the page's
+    # own draw handler scales glyphs by min(105/n, 11). Both texts are x-height letters only
+    # so the measurements are comparable, and each is measured over several seeds because a
+    # single sample carries a spread of its own.
+    short, long = "noun once", "noun once moxe suna comun ecoun samu nexo con" * 2
+    with Generator(style=7, seed=11) as gen:
+        heights = {t: statistics.median(
+            estimate_x_height(Line(text=t, strokes=gen.draw(t).strokes()))
+            for _ in range(3)) for t in (short, long)}
+        long_draw = gen.draw("It was the best of times, it was the worst of times, it was "
+                             "the age of wisdom, it was the age of foolishness, it was the "
+                             "epoch of belief")
+        words = "Call me Ishmael. Some years ago, never mind how long precisely, having " \
+                "little or no money in my purse, and nothing particular to interest me on " \
+                "shore, I thought I would sail about a little".split()
+        width = 300.0
+        lines = gen.flow(list(words), width)
 
-    short, long = "noun once", "noun once moxe suna comun ecoun samu nexo con"
-    samples = {short: [], long: []}
-    calibrated = None
-    for seed in (11, 12, 13):
-        doc = generate([short, long], style=7, seed=seed, calibrate=(seed == 11))
-        calibrated = calibrated or doc
-        for line in doc.lines:
-            samples[line.text].append(estimate_x_height(line))
-    check("the x-height was measured",
-          bool(calibrated.x_height_units), calibrated.x_height_units)
-
-    medians = {k: statistics.median(v) for k, v in samples.items()}
-    ratio = max(medians.values()) / min(medians.values())
+    ratio = max(heights.values()) / min(heights.values())
     check("a {}- and a {}-character line come out the same size".format(
-              len(short), len(long)),
-          ratio < 1.2,
+              len(short), len(long)), ratio < 1.2,
           "{:.2f} vs {:.2f} model units (ratio {:.2f})".format(
-              medians[short], medians[long], ratio))
+              heights[short], heights[long], ratio))
 
-    doc = calibrated
-    check("no line was truncated", not any(l.truncated for l in doc.lines))
-    check("a style is recorded", doc.style == 7)
-    check("the character advance was measured",
-          bool(doc.char_advance_units), doc.char_advance_units)
+    check("a draw far past the site's 50-character input cap finishes",
+          long_draw.finished and len(long_draw.word_ends) == len(long_draw.words),
+          "{} of {} words".format(len(long_draw.word_ends), len(long_draw.words)))
 
-
-def test_online_chunking():
-    section("chunked lines (headless browser)")
-    from handwriting_helper.generate import Generator
-
-    short = "sending a note to a printer one word"                       # 36 chars, one draw
-    long = short + " at a time and carrying on well past the limit"      # 81 chars, two draws
-    with Generator(style=23, seed=31) as gen:
-        gen.calibrate()
-        a = gen.line(short)
-        b = gen.line(long, index=1)
-        fitted = gen.chars_for_width(170.0, 3.0)
-
-    check("a line past the input limit is drawn in chunks",
-          b.chunks and len(b.chunks) == 2, b.chunks)
-    check("the chunks rejoin to the original text",
-          " ".join(b.chunks) == long)
-    check("a short line needs no chunking", a.chunks is None)
-
-    per_char = (b.width() / len(b.text)) / (a.width() / len(a.text))
-    check("a joined line has the same character density as a single draw",
-          0.85 < per_char < 1.15, "ratio {:.2f}".format(per_char))
-
-    check("the page width maps to a plausible line length",
-          30 < fitted < 90, "{} characters across 170 mm".format(fitted))
+    section("line filling (headless browser)")
+    check("every word is set exactly once, in order",
+          " ".join(l.text for l in lines) == " ".join(words))
+    widths = [max(p[0] for p in l.points) for l in lines]
+    check("no line runs past the width", max(widths) <= width,
+          "widest {:.1f} of {:.0f}".format(max(widths), width))
+    check("every line but the last fills most of the width",
+          min(widths[:-1]) > 0.75 * width,
+          " ".join("{:.0f}".format(w) for w in widths))
+    check("no line ran out of steps", not any(l.truncated for l in lines))
 
 
 def _raises(name, exc, fn, *a, **kw):
@@ -305,17 +329,16 @@ def main(argv=None):
                     help="also test generation, which starts headless Chromium")
     args = ap.parse_args(argv)
 
-    test_wrapping()
-    test_chunking()
+    test_paragraphs()
+    test_segmentation()
     test_simplify()
-    test_parse()
     test_layout()
     test_curves()
     test_profiles()
     test_output()
+    test_style_table()
     if args.online:
         test_online(args)
-        test_online_chunking()
 
     print()
     if FAILURES:

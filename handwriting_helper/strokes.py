@@ -1,11 +1,11 @@
 '''
 The canonical intermediate representation.
 
-A Line holds its strokes in *model units*: the coordinate space the neural net itself
-works in, recovered by dividing out the per-line pixel scale that calligrapher.ai applies.
-In model units x=0 is the line's left starting edge, y=0 is its baseline, and y grows
-downward (SVG convention). Because the scale has been divided out, a 4-character line and a
-50-character line come back the same size -- which is what makes stacking them look right.
+A Line holds its strokes in *model units*: the pen offsets the neural net itself emits,
+summed from a start at (0, 0). x=0 is the line's starting edge, y=0 is roughly its baseline,
+and y grows downward (SVG convention). Nothing in this space depends on the line's length --
+a 4-character line and a 100-character line come back the same size, which is what makes
+stacking them look right.
 
 See MODEL_* below for the constants that tie model units to millimetres.
 '''
@@ -15,43 +15,24 @@ import math
 import re
 from dataclasses import dataclass, field, asdict
 
-# The site estimates a line's width as 8.2 * charCount * scale, so one character advances
-# ~8.2 model units. Used to place the starting pen position, same as the site does.
+# The site estimates a line's width as 8.2 model units per character. Only a fallback: the
+# real figure runs from about 7 to 8.5 by style, and is looked up per style (styles.json).
 MODEL_CHAR_ADVANCE = 8.2
-
-# Fallback x-height in model units, used only when calibration is skipped. It is a poor
-# substitute: the styles differ in size by nearly 4x (style 7 measures 3.2 units, style 44
-# measures 12.8), so the real value is measured per run by Generator.calibrate(). This is the
-# median over a sample of styles.
-MODEL_X_HEIGHT = 4.8
 
 # x-height letters only, with the connectors that cursive actually draws. Used as the
 # calibration line: its measured height is what --x-height-mm is scaled against.
 CALIBRATION_TEXT = "nouncesomuxnecoumsanueco"
 
-# The site's sampler gives up after 40 steps per character; hitting that means the line
-# was cut off rather than finished.
-STEPS_PER_CHAR_BUDGET = 40
+# Sampling steps allowed per character before a draw is abandoned as stuck. Real text takes
+# 20-27; the site allows 40.
+STEPS_PER_CHAR_BUDGET = 50
 
-# The site's text input is capped at 50 characters. That caps one *draw*, not one line of
-# output: a longer line is drawn as several chunks and joined (see generate.Generator.line).
-MAX_DRAW_CHARS = 50
+# The longest single draw. The site's 50-character input cap is a UI limit, not a model one:
+# 180-character draws sample cleanly in every style tried. This bounds the overdraw on very
+# wide lines rather than anything the model needs.
+MAX_DRAW_CHARS = 160
 
-# Backwards-compatible alias.
-MAX_LINE_CHARS = MAX_DRAW_CHARS
-
-# Width of the gap left at a chunk seam, as a fraction of a character advance. Calibrated by
-# generating texts whole and in two halves and solving for the gap that makes the widths
-# match: the median came out at 5.9 units against the site's nominal 8.2-unit advance. It is
-# a ratio rather than a constant because the measured advance runs from 7.5 to 9.8 units
-# depending on the style. The spread is wide either way, because this model's word spacing is
-# itself random -- a seam is never more wrong than an ordinary word gap.
-MODEL_WORD_GAP_RATIO = 0.72
-
-# Fallback seam width in model units, for when no advance has been measured.
-MODEL_WORD_GAP = MODEL_WORD_GAP_RATIO * MODEL_CHAR_ADVANCE
-
-STROKES_FORMAT_VERSION = 1
+STROKES_FORMAT_VERSION = 2
 
 
 def normalize_text(text):
@@ -64,12 +45,10 @@ class Line:
     '''One generated line of handwriting, in model units.'''
     text: str
     strokes: list = field(default_factory=list)   # [[(x, y), ...], ...]
-    chunks: list = None                           # draw texts, when the line needed several
     style: int = None
     bias: float = None
-    seed: int = None
-    scale_px_per_unit: float = None               # the site's `t` for this line
-    truncated: bool = False
+    seed: int = None                              # the draw's seed
+    truncated: bool = False                       # ran out of steps before its last word
     blank: bool = False
 
     @property
@@ -88,7 +67,7 @@ class Line:
         return min(xs), min(ys), max(xs), max(ys)
 
     def height(self):
-        '''Ink height in model units. The finished form of callig2svg.py's getHeight().'''
+        '''Ink height in model units.'''
         box = self.bbox()
         return 0.0 if box is None else box[3] - box[1]
 
@@ -151,68 +130,21 @@ class Document:
                    source=d.get("source", ""), version=version)
 
 
-# ---------------------------------------------------------------------------
-# Raw point-array parsing (the old manual workflow's input format)
-# ---------------------------------------------------------------------------
-
-def json2points(raw):
+def split_pen_flags(points):
     '''
-    Parse the JSON produced by `JSON.stringify(tr)` in the browser console.
-
-    JSON.stringify on a Float32Array emits an object with string numeric keys rather than an
-    array, which is why the values are read as point['0'] / ['1'] / ['2']. Plain arrays are
-    accepted too, since that is what the automated generator produces.
-
-    Returns [[{'x': float, 'y': float}, ...], ...] -- one list per continuous stroke, split
-    on the pen-up flag. Single-point strokes are dropped; the very first point of a run is
-    the seed position and carries flag 1, so this discards it as a side effect.
+    [(x, y, pen_up, ...), ...] -> [[(x, y), ...], ...]. A point with pen_up set is the last
+    point of its stroke. Single-point strokes are dropped: they leave no ink.
     '''
-    if isinstance(raw, (str, bytes)):
-        points = json.loads(raw)
-    else:
-        points = raw
-
-    segments = []
-    segment = []
-    for point in points:
-        if isinstance(point, dict):
-            x, y, end = point["0"], point["1"], point["2"]
-        else:
-            x, y, end = point[0], point[1], point[2]
-        segment.append({"x": float(x), "y": float(y)})
-        if end == 1:
-            if len(segment) >= 2:
-                segments.append(segment)
-            segment = []
-    if len(segment) >= 2:
-        segments.append(segment)
-    return segments
-
-
-def moveToOrigin(segments):
-    '''
-    Shift every point so the ink's top-left corner sits at (0, 0), removing surrounding
-    whitespace. Kept for the legacy single-line path; the layout engine deliberately does
-    NOT use this, because cropping to the ink bbox destroys baseline alignment between lines.
-    '''
-    if not segments:
-        return segments
-    minX = min(p["x"] for s in segments for p in s)
-    minY = min(p["y"] for s in segments for p in s)
-    return [[{"x": p["x"] - minX, "y": p["y"] - minY} for p in s] for s in segments]
-
-
-def getHeight(segments):
-    '''Distance between the highest and lowest points of a legacy segment list.'''
-    if not segments:
-        return 0.0
-    ys = [p["y"] for s in segments for p in s]
-    return max(ys) - min(ys)
-
-
-def segments_to_strokes(segments):
-    '''Legacy [{'x','y'}] segments -> [(x, y)] strokes.'''
-    return [[(p["x"], p["y"]) for p in s] for s in segments]
+    strokes, current = [], []
+    for p in points:
+        current.append((p[0], p[1]))
+        if p[2] == 1:
+            if len(current) >= 2:
+                strokes.append(current)
+            current = []
+    if len(current) >= 2:
+        strokes.append(current)
+    return strokes
 
 
 # ---------------------------------------------------------------------------
@@ -301,36 +233,6 @@ def simplify(stroke, tolerance):
     return [p for p, k in zip(stroke, keep) if k]
 
 
-def split_chunks(text, limit=MAX_DRAW_CHARS):
-    '''
-    Split one line into draws of at most `limit` characters, breaking between words.
-
-    The seams land where the model lifts the pen anyway, which is why joining chunks reads as
-    one line while joining individual words does not -- a word generated alone has no
-    neighbours to lead into and comes out visibly pasted on.
-    '''
-    words = normalize_text(text).split(" ")
-    chunks = []
-    current = ""
-    for word in words:
-        while len(word) > limit:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(word[:limit])
-            word = word[limit:]
-        if not current:
-            current = word
-        elif len(current) + 1 + len(word) <= limit:
-            current += " " + word
-        else:
-            chunks.append(current)
-            current = word
-    if current:
-        chunks.append(current)
-    return chunks
-
-
 def reflow(text):
     '''
     Join each paragraph onto one line, so the wrapper decides where lines break.
@@ -352,38 +254,23 @@ def reflow(text):
     return "\n\n".join(paragraphs)
 
 
-def wrap_text(text, width=MAX_LINE_CHARS):
+def paragraphs(text, keep_breaks=False):
     '''
-    Break text into lines of at most `width` characters, on word boundaries, hard-splitting
-    any single word that is longer than the limit. Blank input lines are preserved as blank
-    output lines so they become vertical gaps in the layout.
+    Split input text into paragraphs of words, with None for each blank line between them.
 
-    `width` may exceed the 50-character draw limit; the generator splits each line into draws
-    itself. Line length is a page decision, not a model one.
+    By default each paragraph is reflowed, so line breaks are decided by the page width.
+    Without that, text that arrives already hard-wrapped would be re-wrapped line by line and
+    every original line would leave a short orphan behind. With keep_breaks every input line
+    is its own paragraph -- for text whose breaks are deliberate, like an address or a poem.
+    Lines that are still too wide for the page are wrapped either way.
     '''
+    source = text if keep_breaks else reflow(text)
     out = []
-    for raw_line in text.splitlines():
-        stripped = normalize_text(raw_line)
-        if not stripped:
-            out.append("")
-            continue
-        current = ""
-        for word in stripped.split(" "):
-            while len(word) > width:
-                if current:
-                    out.append(current)
-                    current = ""
-                out.append(word[:width])
-                word = word[width:]
-            if not current:
-                current = word
-            elif len(current) + 1 + len(word) <= width:
-                current += " " + word
-            else:
-                out.append(current)
-                current = word
-        if current:
-            out.append(current)
-    while out and out[-1] == "":
+    for raw in source.splitlines():
+        words = normalize_text(raw)
+        out.append(words.split(" ") if words else None)
+    while out and out[0] is None:
+        out.pop(0)
+    while out and out[-1] is None:
         out.pop()
     return out

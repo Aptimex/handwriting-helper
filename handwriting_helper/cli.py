@@ -5,12 +5,16 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .strokes import Document, MAX_DRAW_CHARS, reflow, wrap_text
-from .layout import layout, LayoutError, parse_page
+from .strokes import Document, MODEL_CHAR_ADVANCE, paragraphs
+from .layout import (
+    DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, resolve_scale, text_width_mm)
 from .gcode_out import BedLimitError, ProfileError, load_profile, write_gcode
 from .svg_out import write_svg
 
 GCODE_SUFFIXES = {".gcode", ".gco", ".g", ".nc", ".ngc"}
+
+# Line length, in characters, when there is no page width to fill (--page fit).
+FIT_PAGE_CHARS = 60
 
 
 def build_parser():
@@ -34,10 +38,9 @@ Chromium. Nothing is sent anywhere.""")
     src.add_argument("--strokes", metavar="PATH",
                      help="reuse a saved strokes file instead of generating again")
     src.add_argument("--wrap", default="fit", metavar="N",
-                     help="characters per line: a number, or 'fit' to fill the page width "
-                          "(default: %(default)s). Not limited to the model's "
-                          "{}-character input cap -- longer lines are drawn in chunks and "
-                          "joined at word boundaries".format(MAX_DRAW_CHARS))
+                     help="line length: 'fit' fills the width between the margins, a number "
+                          "asks for lines of about N characters (default: %(default)s; "
+                          "{} with --page fit)".format(FIT_PAGE_CHARS))
     src.add_argument("--keep-breaks", action="store_true",
                      help="honour the line breaks in the input instead of reflowing each "
                           "paragraph to the page width")
@@ -49,16 +52,11 @@ Chromium. Nothing is sent anywhere.""")
     gen.add_argument("--bias", type=float, default=0.75, metavar="F",
                      help="legibility, 0.15 (loose) to 2.5 (neat) (default: %(default)s)")
     gen.add_argument("--seed", type=int, metavar="N",
-                     help="seed the sampler so the output is reproducible")
+                     help="seed the sampler so the output is reproducible; without one, a "
+                          "seed is chosen and reported")
     gen.add_argument("--tries", type=int, default=3, metavar="N",
-                     help="re-sample a line up to N times if it comes back truncated "
+                     help="re-sample a line up to N times if the model gets stuck "
                           "(default: %(default)s)")
-    gen.add_argument("--no-calibrate", action="store_true",
-                     help="skip the x-height measurement; --x-height-mm becomes approximate, "
-                          "since the styles differ in size by nearly 3x")
-    gen.add_argument("--word-gap", type=float, default=None, metavar="F",
-                     help="width of the gap left at a chunk seam, in model units "
-                          "(default: 0.72 of the style's measured character advance)")
     gen.add_argument("--headed", action="store_true",
                      help="show the browser window (for debugging)")
 
@@ -68,7 +66,8 @@ Chromium. Nothing is sent anywhere.""")
     lay.add_argument("--scale", type=float, metavar="MM",
                      help="set millimetres per model unit directly, ignoring --x-height-mm")
     lay.add_argument("--line-pitch", type=float, metavar="MM",
-                     help="baseline to baseline distance (default: 2.7 x the x-height)")
+                     help="baseline to baseline distance (default: {:g} x the "
+                          "x-height)".format(DEFAULT_LINE_PITCH_RATIO))
     lay.add_argument("--page", default="a4", metavar="SPEC",
                      help="a3/a4/a5/a6/letter/legal, WxH in mm, or 'fit' to crop to the ink "
                           "(default: %(default)s)")
@@ -79,7 +78,8 @@ Chromium. Nothing is sent anywhere.""")
 
     out = p.add_argument_group("output")
     out.add_argument("--outfile", "-o", default="output/output.gcode", metavar="PATH",
-                     help="output path; the format follows the extension "
+                     help="output path; the format follows the extension. A text that runs "
+                          "to several pages is written as NAME-p1, NAME-p2, ... "
                           "(default: %(default)s)")
     out.add_argument("--format", choices=("auto", "gcode", "svg"), default="auto",
                      help="override the format implied by the extension")
@@ -128,28 +128,29 @@ def _parse_margin(spec):
     raise LayoutError("--margin takes one, two or four numbers (got {!r})".format(spec))
 
 
-def _chars_for_page(generator, args):
+def _line_width_units(args, wrap, x_height_units, advance_units):
     '''
-    How many characters fit across the page, at the size the user asked for.
+    How wide a line may be, in model units: the space between the margins at the requested
+    size, or about `wrap` characters of this style.
 
-    This is what decouples line length from the model's 50-character input cap: the page
-    decides where lines break, and the generator splits each line into draws itself.
+    The generator breaks lines against this by measuring real ink, so it is a hard limit
+    rather than an estimate.
     '''
-    size = parse_page(args.page)
-    if size == "fit":
-        # There is no page width to fill, so fall back to one draw per line.
-        return MAX_DRAW_CHARS
     margins = _parse_margin(args.margin)
-    if isinstance(margins, (int, float)):
-        left = right = margins
-    elif len(margins) == 2:
-        left = right = margins[0]
-    else:
-        left, _, right, _ = margins
-    x_height_mm = args.x_height_mm
-    if args.scale is not None and generator.x_height_units:
-        x_height_mm = args.scale * generator.x_height_units
-    return generator.chars_for_width(size[0] - left - right, x_height_mm)
+    width_mm = text_width_mm(args.page, margins)
+    if wrap == "fit" and width_mm is not None:
+        mm_per_unit, _ = resolve_scale(x_height_units, args.x_height_mm, args.scale)
+        return width_mm / mm_per_unit
+    chars = FIT_PAGE_CHARS if wrap == "fit" else wrap
+    return chars * (advance_units or MODEL_CHAR_ADVANCE)
+
+
+def _numbered(path, index, total):
+    '''output.gcode -> output-p2.gcode, when there is more than one page.'''
+    if total == 1:
+        return Path(path)
+    path = Path(path)
+    return path.with_name("{}-p{}{}".format(path.stem, index + 1, path.suffix))
 
 
 def _resolve_format(args):
@@ -197,46 +198,36 @@ def main(argv=None):
         document = Document.from_json(Path(args.strokes).read_text(encoding="utf-8"))
         log("loaded {} lines from {}".format(len(document.lines), args.strokes))
     else:
-        from .generate import Generator, GenerationError, _warn_unsupported
+        from .generate import Generator, GenerationError, warn_unsupported
 
         text = _read_text(args)
         if not text or not text.strip():
             raise SystemExit("no text to write")
+        paras = paragraphs(text, keep_breaks=args.keep_breaks)
+        if not paras:
+            raise SystemExit("no text to write")
 
-        def progress(index, total, line):
-            note = "  [truncated]" if line.truncated else ""
-            if line.chunks:
-                note = "  [{} chunks]".format(len(line.chunks)) + note
-            log("  [{}/{}] {!r} -> {} points{}".format(
-                index + 1, total, line.text, line.point_count(), note))
+        def progress(line):
+            note = "  [ran out of steps]" if line.truncated else ""
+            log("  {!r} -> {} points{}".format(line.text, line.point_count(), note))
 
         try:
             with Generator(style=style, bias=args.bias, seed=args.seed, tries=args.tries,
-                           word_gap=args.word_gap, headless=not args.headed) as gen:
-                if args.no_calibrate:
-                    width = wrap if wrap != "fit" else MAX_DRAW_CHARS
-                else:
-                    gen.calibrate()
-                    width = (_chars_for_page(gen, args) if wrap == "fit" else wrap)
-
-                lines = wrap_text(text if args.keep_breaks else reflow(text), width=width)
-                if not lines:
-                    raise SystemExit("no text to write")
-                _warn_unsupported(gen, lines)
-
-                log("generating {} line(s) at up to {} characters, style {}, "
-                    "x-height {}".format(
-                        len(lines), width, gen.style,
-                        "{:.2f} model units".format(gen.x_height_units)
-                        if gen.x_height_units else "not measured"))
-                document = gen.document(lines, progress=progress)
-        except GenerationError as exc:
+                           headless=not args.headed) as gen:
+                warn_unsupported(gen, paras)
+                width = _line_width_units(args, wrap, gen.x_height_units,
+                                          gen.char_advance_units)
+                log("generating {} paragraph(s), style {}, seed {}, lines up to {:.0f} "
+                    "model units".format(sum(p is not None for p in paras), gen.style,
+                                         gen.seed, width))
+                document = gen.document(paras, width, progress=progress)
+        except (GenerationError, LayoutError) as exc:
             raise SystemExit("generation failed: {}".format(exc))
 
         truncated = [l.text for l in document.lines if l.truncated]
         if truncated:
-            log("warning: {} line(s) were cut off by the model's step budget even after "
-                "{} tries: {}".format(len(truncated), args.tries,
+            log("warning: {} line(s) ran out of sampling steps even after {} tries and may "
+                "be short: {}".format(len(truncated), args.tries,
                                       ", ".join(repr(t) for t in truncated)))
 
     if args.save_strokes:
@@ -247,24 +238,28 @@ def main(argv=None):
 
     # --- layout --------------------------------------------------------------------
     try:
-        page = layout(document, page=args.page, margin_mm=_parse_margin(args.margin),
-                      x_height_mm=args.x_height_mm, line_pitch_mm=args.line_pitch,
-                      align=args.align, mm_per_unit=args.scale)
+        pages = layout(document, page=args.page, margin_mm=_parse_margin(args.margin),
+                       x_height_mm=args.x_height_mm, line_pitch_mm=args.line_pitch,
+                       align=args.align, mm_per_unit=args.scale)
     except LayoutError as exc:
         raise SystemExit("layout failed: {}".format(exc))
 
-    log("page {:.0f} x {:.0f} mm, x-height {:.2f} mm, line pitch {:.2f} mm, {} strokes".format(
-        page.width_mm, page.height_mm, page.x_height_mm, page.line_pitch_mm,
-        len(page.strokes)))
+    first = pages[0]
+    log("{} page(s) of {:.0f} x {:.0f} mm, x-height {:.2f} mm, line pitch {:.2f} mm".format(
+        len(pages), first.width_mm, first.height_mm, first.x_height_mm,
+        first.line_pitch_mm))
 
     # --- output --------------------------------------------------------------------
     fmt = _resolve_format(args)
+    svg_options = dict(smooth=args.smooth, fit_error=args.fit_error,
+                       pen_width_mm=args.pen_width, simplify_tol=args.simplify_tol,
+                       background=args.svg_background)
 
     if fmt == "svg":
-        count = write_svg(page, args.outfile, smooth=args.smooth, fit_error=args.fit_error,
-                          pen_width_mm=args.pen_width, simplify_tol=args.simplify_tol,
-                          background=args.svg_background)
-        log("wrote {} ({} paths)".format(args.outfile, count))
+        for index, page in enumerate(pages):
+            target = _numbered(args.outfile, index, len(pages))
+            count = write_svg(page, target, **svg_options)
+            log("wrote {} ({} paths)".format(target, count))
         return 0
 
     try:
@@ -284,19 +279,22 @@ def main(argv=None):
             args.dry_run_z, profile["pen_down_z"], profile["pen_up_z"]))
 
     header = "text: {}".format(" / ".join(l.text for l in document.lines if l.text)[:200])
-    try:
-        stats = write_gcode(page, args.outfile, profile, smooth=args.smooth,
-                            fit_error=args.fit_error, simplify_tol=args.simplify_tol,
-                            header_comment=header)
-    except BedLimitError as exc:
-        raise SystemExit("refusing to write G-code: {}".format(exc))
+    for index, page in enumerate(pages):
+        target = _numbered(args.outfile, index, len(pages))
+        page_header = header
+        if len(pages) > 1:
+            page_header += "\npage {} of {}".format(index + 1, len(pages))
+        try:
+            stats = write_gcode(page, target, profile, smooth=args.smooth,
+                                fit_error=args.fit_error, simplify_tol=args.simplify_tol,
+                                header_comment=page_header)
+        except BedLimitError as exc:
+            raise SystemExit("refusing to write G-code: {}".format(exc))
+        log("wrote {}: {} strokes, {} points, {:.0f} mm drawn, ~{:.1f} min".format(
+            target, stats["strokes"], stats["points"], stats["draw_mm"], stats["minutes"]))
 
-    log("wrote {}: {} strokes, {} points, {:.0f} mm drawn, ~{:.1f} min".format(
-        args.outfile, stats["strokes"], stats["points"], stats["draw_mm"], stats["minutes"]))
-
-    if args.preview:
-        write_svg(page, args.preview, smooth=args.smooth, fit_error=args.fit_error,
-                  pen_width_mm=args.pen_width, simplify_tol=args.simplify_tol,
-                  background=args.svg_background)
-        log("wrote {}".format(args.preview))
+        if args.preview:
+            preview = _numbered(args.preview, index, len(pages))
+            write_svg(page, preview, **svg_options)
+            log("wrote {}".format(preview))
     return 0

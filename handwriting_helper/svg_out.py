@@ -1,13 +1,9 @@
 '''
 SVG output.
 
-Differences from the original callig2svg.py:
-
-  * one <path> per stroke instead of every stroke concatenated into a single path, so a pen
-    lift is explicit in the file rather than implied by a discontinuity;
-  * real dimensions -- width/height in mm plus a matching viewBox -- so downstream tools
-    don't have to be told what scale the drawing is;
-  * the curve-fitting error is a parameter rather than a module constant.
+One <path> per stroke, so a pen lift is explicit in the file rather than implied by a
+discontinuity, and real dimensions -- width/height in mm plus a matching viewBox -- so
+downstream tools don't have to be told what scale the drawing is.
 '''
 
 import sys

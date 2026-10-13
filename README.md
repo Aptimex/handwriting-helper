@@ -33,20 +33,13 @@ playwright install chromium          # one-off, ~120 MB
 
 Python 3.11 or newer. If you already cloned without `--recurse-submodules`, run `git submodule update --init` (the `fitCurves` submodule is needed for `--smooth`).
 
-If the repo lives on a VMware shared folder (`/mnt/hgfs/...`) or any other filesystem without symlink support, `python3 -m venv .venv` fails with `Operation not supported: 'lib' -> '.../lib64'`. Put the venv somewhere else:
-
-```
-python3 -m venv ~/.venvs/handwriting-helper
-. ~/.venvs/handwriting-helper/bin/activate
-```
-
 ## Use
 
 ```
 # a single line, straight to G-code
 ./handwrite.py "Hello world" -o output/hello.gcode --profile ender3
 
-# a whole letter, wrapped to the page and stacked automatically
+# a whole letter, broken into lines that fill the page, onto as many pages as it takes
 ./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page a5
 
 # see it before you print it
@@ -56,12 +49,16 @@ python3 -m venv ~/.venvs/handwriting-helper
 ./handwrite.py --file letter.txt -o output/letter.svg
 ```
 
-Generating is the slow, random part; layout is what you actually iterate on. Save the strokes once and re-lay them out as often as you like:
+A text that runs past one page is written as numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on — one per sheet of paper.
+
+Generating is the slow, random part. Save the strokes once and you can re-render them — SVG or G-code, a different profile, smoothing, simplification — without generating again:
 
 ```
 ./handwrite.py --file letter.txt --save-strokes output/letter.strokes.json -o output/a.gcode
-./handwrite.py --strokes output/letter.strokes.json --page a5 --x-height-mm 4 -o output/b.gcode
+./handwrite.py --strokes output/letter.strokes.json --smooth -o output/b.gcode
 ```
+
+Line breaks are chosen while generating, against the page width at the requested size. So re-laying saved strokes onto a narrower page or at a larger `--x-height-mm` won't re-break them; you get a warning if they overrun the margins, and should generate again instead.
 
 Run `./handwrite.py --help` for the full list. The options worth knowing:
 
@@ -69,27 +66,35 @@ Run `./handwrite.py --help` for the full list. The options worth knowing:
 |---|---|
 | `--style N` | One of 80 handwriting styles (the website exposes only 9). Fixed for the whole document; `random` picks one and reports it. |
 | `--bias F` | Legibility, 0.15 (loose and scrawly) to 2.5 (neat). |
-| `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. |
+| `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. Without one, a seed is chosen and printed, so a run you like can be repeated. |
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
-| `--wrap N` \| `fit` | Characters per line. `fit` (the default) fills the page width. |
+| `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
 | `--keep-breaks` | Honour the line breaks in your input instead of reflowing each paragraph. |
 | `--page`, `--margin`, `--align`, `--line-pitch` | Page layout. `--page fit` crops to the ink. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
 
-## Line length and the 50-character limit
+## How lines are broken
 
-The model's input box caps a single draw at 50 characters, but that no longer caps a line of output. Lines longer than the limit are split at word boundaries, drawn as separate chunks, and butted back together on a shared baseline. So `--wrap` takes any width, and by default the *page* decides where lines break: `--wrap fit` measures the chosen style and fits as many characters as the margins allow.
+Most of the difficulty in laying out generated handwriting is that you don't know how wide a line of it will be until it has been drawn: the 80 styles' letter widths differ, and so does every sample of the same style. Predicting a character count and hoping it fits leaves you choosing between lines that overrun the margin and lines that stop well short of it.
 
-Seams land between words, which is where the model lifts the pen anyway, so a joined line reads as one line. Two details make that work:
+So nothing is predicted. Each line is drawn with more words than should fit, and then cut back:
 
-- **The gap at a seam** is set to 0.72 of the style's measured character advance. That figure comes from generating texts whole and in halves and solving for the gap that makes the widths match. It is a ratio rather than a fixed number because the measured advance runs from 7.5 to 9.8 model units depending on the style. Override it with `--word-gap`.
-- **The baseline drift carries across the seam**, so the line keeps wandering the way a single draw would instead of stepping back to level. The carry is clamped per seam so one badly-fitted chunk can't tilt the rest of the line.
+1. Draw the next ~1.5 lines' worth of words as one sequence.
+2. Find where each word's ink ends. The model's attention says which character it is writing at every step, so each point of ink belongs to a known word. A word ends at the last pen lift before the model starts on the next word.
+3. Keep the longest run of whole words whose ink stays inside the line width. The words after it start the next line.
 
-Joining *individual words* rather than multi-word chunks was tried and is noticeably worse: a word drawn alone has no neighbours to lead into, letter sizes wobble more between words, and the result reads as pasted together. Chunks close to the 50-character limit keep almost all of the model's context, and there is only one seam per overflowing line rather than one per word. They are also far quicker — one draw per line instead of one per word.
+The model writes strictly left to right, so the part that is kept is a genuine sample of the shorter text, not an approximation of it. Lines come out within the margins every time, and typically 90–98% full. Sampling stops as soon as the pen passes the line width, so the extra words cost almost nothing.
 
-Because line breaks are now a page decision, input that arrives already hard-wrapped is reflowed paragraph by paragraph first; otherwise every original line break would leave a short orphan behind. Blank lines still separate paragraphs. Use `--keep-breaks` for text where the line breaks are deliberate, such as an address block or a poem.
+Two of the model's own quirks are handled on the way:
+
+- **The 50-character input cap is only the website's.** The model itself happily draws 180 characters in one go, which is longer than a line on any ordinary page, so each line is one draw's ink — there are no seams to hide.
+- **Stalls.** Occasionally attention sticks on one letter and the pen runs off to the right writing "enenenen". The sampler notices the pen travelling several characters' width without attention moving on, stops, and that line is redrawn with a fresh seed.
+
+A word too wide for a line on its own is split across lines. Input that arrives already hard-wrapped is reflowed paragraph by paragraph first, otherwise every original line break would leave a short orphan behind; blank lines still separate paragraphs. Use `--keep-breaks` for text where the line breaks are deliberate, such as an address block or a poem.
+
+Pages are then simple: every line is the same pitch apart, so a page holds a fixed number of lines and the rest continue on the next.
 
 ## Printer profiles
 
@@ -112,29 +117,26 @@ No profile ever emits heater, fan or extruder commands. If your machine needs an
 
 ```
 text
-  └─ reflowed into paragraphs, then wrapped to the page width
-      └─ headless Chromium runs website/ once, then draws each line
-          │   lines over 50 characters are drawn in chunks and joined
-          └─ strokes in model units, baseline-relative and length-independent
-              ├─ layout: scaled to millimetres, stacked on a baseline grid, placed on a page
-              ├─ SVG:    one <path> per stroke, dimensions in mm
-              └─ G-code: one pen-down move per stroke, from a printer profile
+  └─ split into paragraphs of words
+      └─ headless Chromium loads website/ once, for its model
+          └─ each line: draw extra words, cut back to the ones whose ink fits the width
+              └─ strokes in model units, baseline-relative and length-independent
+                  ├─ layout: scaled to millimetres, stacked on a baseline grid, paginated
+                  ├─ SVG:    one <path> per stroke, dimensions in mm
+                  └─ G-code: one pen-down move per stroke, from a printer profile
 ```
 
-A few things in the site's code shape all of this, and they are documented where they matter in `handwriting_helper/generate.py`:
+The page is used only for its model. Its script declares everything as top-level globals, so `handwriting_helper/generate.py` runs its own sampling loop on the page's encoder, sampling step and weights instead of pressing the Draw button. That matters because the page's own draw handler **scales glyphs by the character count** (`v = min(105/n, 11)`), so a 50-character line comes out about five times smaller than a 10-character one. Sampling directly yields the model's own pen offsets, in which a letter is the same size whatever line it is in.
 
-- The Draw button listens for `mousedown`, not `click`, and only after the model has loaded.
-- The sampler gives up after 40 steps per character. Hitting that means the line was cut off rather than finished, so `--tries` re-draws it.
-- **Glyph scale is derived from the character count** (`v = min(105/n, 11) * canvasWidth/1240`), so a 50-character line is drawn about five times smaller than a 10-character one. The page leaves that scale in a global, which is what lets this tool undo it. Without that, stacked lines come out in mismatched sizes.
-- The 80 style vectors differ in size by nearly 4×, so each run measures the chosen style rather than assuming a constant: the x-height anchors `--x-height-mm`, and the character advance is what `--wrap fit` counts with. `--no-calibrate` skips both.
+The 80 style vectors differ in size by more than 4×, so `--x-height-mm` needs to know the chosen style's size. That depends on the style alone — bias moves it by under 5% — so it is measured once per style and shipped in `handwriting_helper/styles.json`. `tools/build_style_table.py` rebuilds it (a few minutes) if the model ever changes.
 
-Measuring the x-height needs a little care, and `strokes.estimate_x_height` explains why. Removing a straight baseline fit is not enough, because real drift is not linear: the leftover wander grows with line length, and a whole-line measurement makes a 45-character sample read about 28% taller than a 9-character one even though the letters are the same size. Measuring in fixed-width windows instead holds to within 4% across those lengths.
+Measuring an x-height needs a little care, and `strokes.estimate_x_height` explains why. Removing a straight baseline fit is not enough, because real drift is not linear: the leftover wander grows with line length, and a whole-line measurement makes a 45-character sample read about 28% taller than a 9-character one even though the letters are the same size. Measuring in fixed-width windows instead holds to within 4% across those lengths.
 
 ### Limitations
 
 - The model's vocabulary is 77 printable characters; anything else is drawn as garbage and warned about. Digits in particular are the model's weakest output.
-- Each chunk is sampled independently, so a stray flourish is possible. Re-run with a different `--seed`, or edit the saved strokes file.
-- `--wrap fit` sizes lines from a measured average advance, so an unusually wide line can still overrun the margin by a millimetre or two. You get a warning when it does.
+- Every line is sampled separately, so a stray flourish or a misformed first letter is possible. Re-run with a different `--seed`, or edit the saved strokes file.
+- The model now and then leaves out punctuation, most often a full stop at the very end of a paragraph.
 
 ## The offline site copy
 
@@ -142,21 +144,11 @@ Measuring the x-height needs a little care, and `strokes.estimate_x_height` expl
 
 `handwrite.py` serves that directory on a random local port and intercepts the `d.bin` request, so the copy needs no edits. To use it by hand instead, see `website/README.md`.
 
-## The old manual workflow
-
-The original flow still works if you have point arrays captured that way:
-
-1. Generate text on calligrapher.ai, open the browser console and run `JSON.stringify(tr)`.
-2. Save the output to a file, stripping the surrounding quotes (and un-escaping `\"` if your browser added them).
-3. `./callig2svg.py points.json -o output/output.svg`
-
-`input/sample-points.json` is one such capture, kept as a test fixture. Those points are in the browser's canvas pixels, so the resulting SVG has no meaningful scale — which is one of the things `handwrite.py` fixes.
-
 ## Tests
 
 ```
-tools/selftest.py            # wrapping, chunking, layout, curve fitting, profiles, output
-tools/selftest.py --online   # also generation: reproducibility, scale consistency, seams
+tools/selftest.py            # paragraphs, word segmentation, layout and pagination, output
+tools/selftest.py --online   # also generation: reproducibility, scale, long draws, line filling
 ```
 
 ## Alternatives

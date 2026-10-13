@@ -1,19 +1,22 @@
 '''
-Turn model-unit lines into millimetre page coordinates.
+Turn model-unit lines into millimetre pages.
 
-Two things here are worth knowing about:
+Lines arrive already fitted to the width (generate.Generator.flow measures the ink while
+breaking them), so this module only has to scale, stack and paginate:
 
   * Lines are stacked by *baseline*, not by bounding box. Cropping each line to its own ink
-    (which is all the legacy moveToOrigin() does) throws away the information that makes a
-    paragraph look like a paragraph: ascenders, descenders and a common left edge.
+    throws away the information that makes a paragraph look like a paragraph: ascenders,
+    descenders and a common left edge.
 
-  * The scale comes from a measured x-height rather than a constant, because the model's
-    styles differ in size by nearly 3x. See generate.calibrate_x_height().
+  * The scale comes from the style's measured x-height (styles.json) rather than a constant,
+    because the model's styles differ in size by nearly 4x.
+
+  * Page height is a fixed number of baselines, so a long text simply continues onto the
+    next page.
 '''
 
 import sys
 
-from .strokes import MODEL_X_HEIGHT
 
 # width, height in mm
 PAGE_SIZES = {
@@ -29,6 +32,11 @@ PAGE_SIZES = {
 # which is where this sits; going much tighter starts to put descenders into the ascenders
 # of the line below.
 DEFAULT_LINE_PITCH_RATIO = 3.1
+
+# Room left for ascenders above the first baseline and descenders below the last, as
+# multiples of x-height.
+ASCENDER_ROOM = 2.0
+DESCENDER_ROOM = 1.5
 
 
 class LayoutError(ValueError):
@@ -79,86 +87,136 @@ class Page:
         return sum(len(s) for s in self.strokes)
 
 
+def resolve_scale(x_height_units, x_height_mm=3.0, mm_per_unit=None):
+    '''(mm_per_unit, x_height_mm) from either a target x-height or an explicit scale.'''
+    if not x_height_units:
+        raise LayoutError("the document has no x-height, so it cannot be scaled")
+    if mm_per_unit is None:
+        mm_per_unit = x_height_mm / x_height_units
+    else:
+        x_height_mm = mm_per_unit * x_height_units
+    if mm_per_unit <= 0:
+        raise LayoutError("scale must be positive")
+    return mm_per_unit, x_height_mm
+
+
+def text_width_mm(page, margin_mm):
+    '''Width between the side margins, or None for a page cropped to the ink.'''
+    size = parse_page(page) if page is not None else "fit"
+    if size == "fit":
+        return None
+    ml, _, mr, _ = _margins(margin_mm)
+    width = size[0] - ml - mr
+    if width <= 0:
+        raise LayoutError("margins leave no room on a {:g} mm wide page".format(size[0]))
+    return width
+
+
 def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=None,
            align="left", mm_per_unit=None, warn=True):
     '''
+    Lay a document out on as many pages as it needs. Returns a list of Page.
+
     document       a Document of lines in model units
-    page           "a4" / "letter" / "WxH" / "fit" / None (same as "fit")
+    page           "a4" / "letter" / "WxH" / "fit" / None (same as "fit"); "fit" is always a
+                   single page cropped to the ink
     margin_mm      single value, or (left, top, right, bottom)
     x_height_mm    target height of an x-height letter
-    line_pitch_mm  baseline-to-baseline distance; defaults to 2.7 * x_height_mm
+    line_pitch_mm  baseline-to-baseline distance; defaults to DEFAULT_LINE_PITCH_RATIO times
+                   the x-height
     align          "left", "center" or "right"
     mm_per_unit    bypass x_height_mm and set the scale directly
     '''
     if align not in ("left", "center", "right"):
         raise LayoutError("align must be left, center or right (got {!r})".format(align))
 
-    units = document.x_height_units or MODEL_X_HEIGHT
-    if mm_per_unit is None:
-        mm_per_unit = x_height_mm / units
-    else:
-        x_height_mm = mm_per_unit * units
-    if mm_per_unit <= 0:
-        raise LayoutError("scale must be positive")
-
+    mm_per_unit, x_height_mm = resolve_scale(document.x_height_units, x_height_mm,
+                                             mm_per_unit)
     if line_pitch_mm is None:
         line_pitch_mm = DEFAULT_LINE_PITCH_RATIO * x_height_mm
 
     size = parse_page(page) if page is not None else "fit"
     ml, mt, mr, mb = _margins(margin_mm)
 
-    # Place every line against a notional origin first, then decide where that origin goes.
-    placed = []          # (baseline_mm, [[(x_mm, y_mm), ...], ...])
-    baseline = 0.0
+    # Scale every line about its own baseline; None marks a blank line.
+    rows = []
     for line in document.lines:
         if line.blank or not line.strokes:
-            baseline += line_pitch_mm
+            rows.append(None)
             continue
-        strokes = [[(x * mm_per_unit, baseline + y * mm_per_unit) for x, y in stroke]
-                   for stroke in line.strokes]
-        placed.append((baseline, strokes))
-        baseline += line_pitch_mm
-
-    if not placed:
+        rows.append([[(x * mm_per_unit, y * mm_per_unit) for x, y in stroke]
+                     for stroke in line.strokes])
+    if not any(rows):
         raise LayoutError("nothing to lay out: the document has no ink")
 
-    if warn:
-        _warn_collisions(placed)
-
     if size == "fit":
-        strokes = [s for _, ss in placed for s in ss]
+        placed = _stack(rows, line_pitch_mm)
+        if warn:
+            _warn_collisions(placed)
+        strokes = [s for ss in placed for s in ss]
         xs = [p[0] for s in strokes for p in s]
         ys = [p[1] for s in strokes for p in s]
         width = (max(xs) - min(xs)) + ml + mr
         height = (max(ys) - min(ys)) + mt + mb
         dx, dy = ml - min(xs), mt - min(ys)
         out = [[(x + dx, y + dy) for x, y in s] for s in strokes]
-        return Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm)
+        return [Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm)]
 
     width, height = size
     text_width = width - ml - mr
     if text_width <= 0:
         raise LayoutError("margins leave no room on a {:g} mm wide page".format(width))
+    first_baseline = mt + ASCENDER_ROOM * x_height_mm
+    last_baseline = height - mb - DESCENDER_ROOM * x_height_mm
+    per_page = int((last_baseline - first_baseline) // line_pitch_mm) + 1
+    if per_page < 1:
+        raise LayoutError("a {:g} x {:g} mm page with these margins has no room for a line "
+                          "at a {:g} mm x-height".format(width, height, x_height_mm))
 
-    # The first baseline sits one x-height's worth of ascender below the top margin.
-    top_offset = mt + 2.0 * x_height_mm
-
-    out = []
-    for _, strokes in placed:
-        xs = [p[0] for s in strokes for p in s]
-        line_width = max(xs) - min(xs)
-        if align == "left":
-            dx = ml            # x=0 is the pen's start position, so left edges line up
-        elif align == "center":
-            dx = ml + (text_width - line_width) / 2.0 - min(xs)
-        else:
-            dx = ml + text_width - line_width - min(xs)
-        out.extend([[(x + dx, y + top_offset) for x, y in s] for s in strokes])
-
-    page_obj = Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm)
+    pages = []
+    for chunk in _paginate(rows, per_page):
+        placed = _stack(chunk, line_pitch_mm)
+        if warn:
+            _warn_collisions(placed)
+        out = []
+        for strokes in placed:
+            xs = [p[0] for s in strokes for p in s]
+            line_width = max(xs) - min(xs)
+            if align == "left":
+                dx = ml            # x=0 is the pen's start position, so left edges line up
+            elif align == "center":
+                dx = ml + (text_width - line_width) / 2.0 - min(xs)
+            else:
+                dx = ml + text_width - line_width - min(xs)
+            out.extend([[(x + dx, y + first_baseline) for x, y in s] for s in strokes])
+        pages.append(Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm))
     if warn:
-        _warn_overflow(page_obj, ml, mt, mr, mb)
-    return page_obj
+        _warn_overflow(pages, ml, mr)
+    return pages
+
+
+def _paginate(rows, per_page):
+    '''Split rows into pages of `per_page`, dropping blank lines at the top of a page.'''
+    pages, current = [], []
+    for row in rows:
+        if row is None and not current:
+            continue
+        current.append(row)
+        if len(current) == per_page:
+            pages.append(current)
+            current = []
+    if any(r is not None for r in current):
+        pages.append(current)
+    return pages
+
+
+def _stack(rows, pitch):
+    '''Move each row down to its baseline. Blank rows take a pitch and draw nothing.'''
+    placed = []
+    for k, row in enumerate(rows):
+        if row is not None:
+            placed.append([[(x, y + k * pitch) for x, y in s] for s in row])
+    return placed
 
 
 def _margins(margin_mm):
@@ -191,7 +249,7 @@ def _warn_collisions(placed):
         return out
 
     worst = 0.0
-    for (_, above), (_, below) in zip(placed, placed[1:]):
+    for above, below in zip(placed, placed[1:]):
         top_cols = columns(above)
         bottom_cols = columns(below)
         for key, (_, bottom_of_above) in top_cols.items():
@@ -205,20 +263,19 @@ def _warn_collisions(placed):
 
 
 # Lines are anchored on the pen's starting x, not their ink bounds, so a leading flourish can
-# poke a fraction of a millimetre past the margin. Only complain about real overflow.
+# poke a fraction of a millimetre past the margin. Only complain about real overflow, which
+# now only happens when saved strokes are re-laid onto a narrower page than they were set for.
 _OVERFLOW_TOLERANCE_MM = 1.0
 
 
-def _warn_overflow(page, ml, mt, mr, mb):
-    box = page.bbox()
-    if box is None:
-        return
-    x0, y0, x1, y1 = box
-    over = max(x1 - (page.width_mm - mr), ml - x0)
+def _warn_overflow(pages, ml, mr):
+    over = 0.0
+    for page in pages:
+        box = page.bbox()
+        if box is not None:
+            over = max(over, box[2] - (page.width_mm - mr), ml - box[0])
     if over > _OVERFLOW_TOLERANCE_MM:
-        print("warning: text overruns the side margins by {:.1f} mm".format(over),
-              file=sys.stderr)
-    below = y1 - (page.height_mm - mb)
-    if below > _OVERFLOW_TOLERANCE_MM:
-        print("warning: text runs {:.1f} mm past the bottom margin".format(below),
+        print("warning: text overruns the side margins by {:.1f} mm. Lines are broken when "
+              "they are generated, so re-laying saved strokes onto a narrower page or at a "
+              "larger size does not re-break them; generate again instead.".format(over),
               file=sys.stderr)
