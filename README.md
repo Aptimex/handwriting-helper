@@ -1,14 +1,17 @@
 # handwriting-helper
 
-Turn text into G-code that a 3D printer can plot in something that looks like human handwriting — in one command, with nothing sent anywhere.
+Turn text into G-code that a 3D printer can plot in a way that mimics the strokes of human handwriting.
 
-```
-./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3
+```bash
+./handwrite.py --file letter.txt -o output/letter.gcode --profile generic-256
 ```
 
 ![example output](docs/example.svg)
 
 The handwriting comes from [calligrapher.ai](https://www.calligrapher.ai/), a recurrent neural net trained on the IAM On-Line Handwriting Database. A complete offline copy lives in `website/`, and this tool drives it in headless Chromium, so the model runs on your machine and no text leaves it.
+
+> [!WARNING]
+> This program outputs raw G-code. If you pick the wrong settings, this G-code may cause the printer to attempt movement outside its physical limits, causing damage. Use at your own risk.
 
 ## Why this exists
 
@@ -26,12 +29,11 @@ So this reaches into the page for the raw stroke points, and keeps the explicit 
 git clone --recurse-submodules https://github.com/Aptimex/handwriting-helper
 cd handwriting-helper
 
-python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium          # one-off, ~120 MB
 ```
 
-Python 3.11 or newer. If you already cloned without `--recurse-submodules`, run `git submodule update --init` (the `fitCurves` submodule is needed for `--smooth`).
+Requires python 3.11 or newer. If you already cloned without `--recurse-submodules`, run `git submodule update --init` (the `fitCurves` submodule is needed for `--smooth`).
 
 ## Use
 
@@ -39,35 +41,35 @@ Python 3.11 or newer. If you already cloned without `--recurse-submodules`, run 
 # a single line, straight to G-code
 ./handwrite.py "Hello world" -o output/hello.gcode --profile ender3
 
-# a whole letter, broken into lines that fill the page, onto as many pages as it takes
+# a whole text file, reflowed into lines that fill an A5 page, split into as many pages as needed
 ./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page a5
 
-# the same, using as much of the bed as the pen can reach
+# the same, but assuming the paper fills the entire bed
 ./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page fit
 
 # see it before you print it
 ./handwrite.py --file letter.txt -o output/letter.gcode --preview output/letter.svg
 
-# SVG instead, if you'd rather keep your own G-code workflow
+# SVG output instead of G-code, if you'd rather keep your own G-code workflow
 ./handwrite.py --file letter.txt -o output/letter.svg
 ```
 
-A text that runs past one page is written as numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on — one per sheet of paper. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, … (see [Printer profiles](#printer-profiles)). SVG output and `--preview` are never cut.
+A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVG output and `--preview` are never cut.
 
-Generating is the slow, random part. Save the strokes once and you can re-render them — SVG or G-code, a different profile, smoothing, simplification — without generating again:
+Generating strokes is the slow, random part. You can save the raw strokes output and re-render them them later into SVG or G-code, with a different profile, smoothing, simplification, etc:
 
 ```
 ./handwrite.py --file letter.txt --save-strokes output/letter.strokes.json -o output/a.gcode
 ./handwrite.py --strokes output/letter.strokes.json --smooth -o output/b.gcode
 ```
 
-Line breaks are chosen while generating, against the page width at the requested size. So re-laying saved strokes onto a narrower page or at a larger `--x-height-mm` won't re-break them; you get a warning if they overrun the margins, and should generate again instead.
+However, line breaks are chosen during the stroke generation step against the page width at the requested size. So re-laying saved strokes onto a narrower page or at a larger `--x-height-mm` won't re-break them; you get a warning if they overrun the margins, and should generate again instead.
 
-Run `./handwrite.py --help` for the full list. The options worth knowing:
+Run `./handwrite.py --help` for the full list. The main options:
 
 | Option | What it does |
 |---|---|
-| `--style N` | One of 80 handwriting styles (the website exposes only 9). Fixed for the whole document; `random` picks one and reports it. |
+| `--style N` | One of 80 handwriting styles (the website exposes only 9). `random` picks one and prints it. |
 | `--bias F` | Legibility, 0.15 (loose and scrawly) to 2.5 (neat). |
 | `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. Without one, a seed is chosen and printed, so a run you like can be repeated. |
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
@@ -78,22 +80,17 @@ Run `./handwrite.py --help` for the full list. The options worth knowing:
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
 
-## How lines are broken
+## Text reflow
 
 Most of the difficulty in laying out generated handwriting is that you don't know how wide a line of it will be until it has been drawn: the 80 styles' letter widths differ, and so does every sample of the same style. Predicting a character count and hoping it fits leaves you choosing between lines that overrun the margin and lines that stop well short of it.
 
-So nothing is predicted. Each line is drawn with more words than should fit, and then cut back:
+To solve this, each line is drawn with more words than should fit, and then cut back as soon as a stroke crosses the margin:
 
 1. Draw the next ~1.5 lines' worth of words as one sequence.
 2. Find where each word's ink ends. The model's attention says which character it is writing at every step, so each point of ink belongs to a known word. A word ends at the last pen lift before the model starts on the next word.
-3. Keep the longest run of whole words whose ink stays inside the line width. The words after it start the next line.
+3. Keep the longest run of whole words whose ink stays inside the line width. The words after it are used to start the next line.
 
-The model writes strictly left to right, so the part that is kept is a genuine sample of the shorter text, not an approximation of it. Lines come out within the margins every time, and typically 90–98% full. Sampling stops as soon as the pen passes the line width, so the extra words cost almost nothing.
-
-Two of the model's own quirks are handled on the way:
-
-- **The 50-character input cap is only the website's.** The model itself happily draws 180 characters in one go, which is longer than a line on any ordinary page, so each line is one draw's ink — there are no seams to hide.
-- **Stalls.** Occasionally attention sticks on one letter and the pen runs off to the right writing "enenenen". The sampler notices the pen travelling several characters' width without attention moving on, stops, and that line is redrawn with a fresh seed.
+Sampling stops as soon as the pen passes the line width, so the extra words don't actually burn time getting generated.
 
 A word too wide for a line on its own is split across lines. Input that arrives already hard-wrapped is reflowed paragraph by paragraph first, otherwise every original line break would leave a short orphan behind; blank lines still separate paragraphs. Use `--keep-breaks` for text where the line breaks are deliberate, such as an address block or a poem.
 
@@ -103,7 +100,7 @@ Pages are then simple: every line is the same pitch apart, so a page holds a fix
 
 G-code is written from a profile. Two are included, both commented: `profiles/ender3.toml` for a 220 × 220 mm bed, and `profiles/generic-256.toml` for the 256 × 256 mm beds most current machines use. Copy one and edit it. `--profile` takes either a name from `profiles/` or a path to a `.toml` file.
 
-The number that matters is `pen_down_z`. Home the machine, jog Z down until the pen just marks the paper, and use that value. Then check the result before committing to it:
+The number that matters is `pen_down_z`. Home the machine, jog Z down until the pen reliably marks the paper while moving, and use that value. Then sanity check the result by "writing" 5mm above the bed before committing to it:
 
 ```
 ./handwrite.py "test" -o output/test.gcode --profile generic-256 --dry-run-z 5
@@ -112,7 +109,7 @@ tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 
 `tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red. It is the cheapest way to catch an inverted axis or a pen that never lifts.
 
-No profile ever emits heater, fan or extruder commands. If your machine needs any, put them in the profile's `preamble`.
+No profile ever emits heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
 
 `handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. A page taller than the bed — A4 or Letter on a 220 or 256 mm bed — is cut between lines into lettered parts, `-p1a`, `-p1b`, …, each of which fits. The lines already in reach with the paper in its usual place make up one part that needs no paper move; for each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres, for example:
 
@@ -175,3 +172,4 @@ GPL-3.0-or-later. The `fitCurves` submodule is MIT.
 
 ## TODO
 - Handle or warn about pen offset vs nozzle.
+- Treat single newlines as newlines, not pre-wrapped text
