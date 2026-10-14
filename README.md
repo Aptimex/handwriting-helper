@@ -8,7 +8,7 @@ Turn text into G-code that a 3D printer can plot in a way that mimics the stroke
 
 ![example output](docs/example.svg)
 
-The handwriting comes from [calligrapher.ai](https://www.calligrapher.ai/), a recurrent neural net trained on the IAM On-Line Handwriting Database. A complete offline copy lives in `website/`, and this tool drives it in headless Chromium, so the model runs on your machine and no text leaves it.
+The handwriting comes from [calligrapher.ai](https://www.calligrapher.ai/), a recurrent neural net trained on the IAM On-Line Handwriting Database. A complete offline copy lives in `website/`, and this tool runs its network with a numpy port of the page's JavaScript, so everything runs locally.
 
 > [!WARNING]
 > This program outputs raw G-code. If you pick the wrong settings, this G-code may cause the printer to attempt movement outside its physical limits, causing damage. Use at your own risk.
@@ -30,8 +30,9 @@ git clone --recurse-submodules https://github.com/Aptimex/handwriting-helper
 cd handwriting-helper
 
 pip install -r requirements.txt
-playwright install chromium          # one-off, ~120 MB
 ```
+
+The original site can still be used as the "backend" instead of the numpy port, with `--backend browser`, but it needs Playwright and a headless Chromium (`pip install playwright && playwright install chromium`, about 120 MB). Both backends produce effectively identical output, and the numpy one runs faster.
 
 Requires python 3.11 or newer. If you already cloned without `--recurse-submodules`, run `git submodule update --init` (the `fitCurves` submodule is needed for `--smooth`).
 
@@ -126,7 +127,7 @@ A page too *wide* for the bed cannot be cut this way and is still refused: use a
 ```
 text
   └─ split into paragraphs of words
-      └─ headless Chromium loads website/ once, for its model
+      └─ the model in website/d.bin is loaded once
           └─ each line: draw extra words, cut back to the ones whose ink fits the width
               └─ strokes in model units, baseline-relative and length-independent
                   ├─ layout: scaled to millimetres, stacked on a baseline grid, paginated
@@ -134,7 +135,7 @@ text
                   └─ G-code: one pen-down move per stroke, from a printer profile
 ```
 
-The page is used only for its model. Its script declares everything as top-level globals, so `handwriting_helper/generate.py` runs its own sampling loop on the page's encoder, sampling step and weights instead of pressing the Draw button. That matters because the page's own draw handler **scales glyphs by the character count** (`v = min(105/n, 11)`), so a 50-character line comes out about five times smaller than a 10-character one. Sampling directly yields the model's own pen offsets, in which a letter is the same size whatever line it is in.
+The page is used only for its model. `handwriting_helper/model.py` is a line-for-line numpy port of the page's network, and runs its own sampling loop instead of the page's Draw button (the browser backend in `generate.py` does the same inside the page, on its globals). That matters because the page's own draw handler **scales glyphs by the character count** (`v = min(105/n, 11)`), so a 50-character line comes out about five times smaller than a 10-character one. Sampling directly yields the model's own pen offsets, in which a letter is the same size whatever line it is in.
 
 The 80 style vectors differ in size by more than 4×, so `--x-height-mm` needs to know the chosen style's size. That depends on the style alone — bias moves it by under 5% — so it is measured once per style and shipped in `handwriting_helper/styles.json`. `tools/build_style_table.py` rebuilds it (a few minutes) if the model ever changes.
 
@@ -162,14 +163,15 @@ tools/selftest.py --online   # also generation: reproducibility, scale, long dra
 ## Alternatives
 
 - If you don't mind the uniform look of a font, skip all of this and generate G-code from an [engraving font](https://www.evilmadscientist.com/2019/hershey-text-v30/) in Inkscape.
-- [otuva/handwriting-synthesis](https://github.com/otuva/handwriting-synthesis) is a TensorFlow 2 fork of the original model with pretrained weights, if you'd rather have a pure-Python generator than a browser. It is archived, and its output differs from calligrapher.ai's.
+- [otuva/handwriting-synthesis](https://github.com/otuva/handwriting-synthesis) is a TensorFlow 2 fork of the original model with pretrained weights. It is archived, and its output differs from calligrapher.ai's.
 - [utrost/VHS](https://github.com/utrost/VHS) builds plotter handwriting from a library of hand-drawn glyphs rather than a neural net, and has its own page layout engine.
 - [vpype](https://github.com/abey79/vpype) with [vpype-gcode](https://github.com/plottertools/vpype-gcode), or [svg2gcode](https://github.com/sameer/svg2gcode), if you want to take the SVG output through a general-purpose plotter toolchain instead.
 
 ## License
 
-GPL-3.0-or-later. The `fitCurves` submodule is MIT.
+AGPL-3.0-or-later. The `fitCurves` submodule is MIT.
 
 ## TODO
 - Handle or warn about pen offset vs nozzle.
 - Treat single newlines as newlines, not pre-wrapped text
+- Default to Letter

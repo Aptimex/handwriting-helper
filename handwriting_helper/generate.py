@@ -1,8 +1,16 @@
 '''
-Stroke generation, by running the offline copy of calligrapher.ai's model in headless Chromium.
+Stroke generation, by running the offline copy of calligrapher.ai's model.
 
-Everything the page needs is already in website/ -- d.bin is the complete 2.65 MB model and
-the network is hand-written vanilla JS, so there is no ML framework involved.
+Everything needed is already in website/ -- d.bin is the complete 2.65 MB model and the
+network is hand-written vanilla JS, so there is no ML framework involved. There are two
+backends that run it:
+
+  * numpy (the default): model.py, a line-for-line port of the page's network. It needs
+    nothing beyond numpy, and draws the same strokes as the browser for the same seed.
+  * browser: the page itself in headless Chromium, through Playwright. Kept as the reference
+    the port is checked against (tools/compare_backends.py).
+
+The rest of this describes the browser backend; the numpy one mirrors it.
 
 The page is loaded only for its model. Its script declares everything with top-level `var`,
 so the encoder (`A`), the sampling step (`L`), the weights (`$`) and the vocabulary (`H`) are
@@ -274,30 +282,48 @@ def _word_ends(points, text, finished=True):
     return ends
 
 
-class Generator:
-    '''
-    A loaded browser page, ready to draw.
+BACKENDS = ("numpy", "browser")
 
-    Held open across a document so the 2.65 MB model is loaded once. Use it as a context
-    manager:
 
-        with Generator(style=7, seed=1) as gen:
-            lines = gen.flow("some words to set".split(), width_units=400)
-    '''
+class NumpyBackend:
+    '''Runs the model directly, from the numpy port in model.py.'''
 
-    def __init__(self, style=None, bias=0.75, seed=None, tries=3, headless=True):
-        self.style = style
-        self.bias = bias
-        self.seed = seed if seed is not None else random.randrange(2 ** 31)
-        self.tries = tries
+    def __init__(self, **_):
+        self.model = None
+
+    def open(self):
+        from .model import Model, ModelError
+        model_file = WEBSITE_DIR / MODEL_BIN
+        if not model_file.is_file():
+            raise GenerationError("missing {} -- the model weights are needed".format(
+                model_file))
+        try:
+            self.model = Model(model_file)
+        except ModelError as exc:
+            raise GenerationError(str(exc)) from exc
+
+    def close(self):
+        self.model = None
+
+    @property
+    def n_styles(self):
+        return self.model.n_styles
+
+    def vocabulary(self):
+        return set(self.model.vocabulary)
+
+    def sample(self, text, style, bias, seed, budget, max_x, stall_x):
+        return self.model.sample(text, style, bias, seed, budget, max_x, stall_x)
+
+
+class BrowserBackend:
+    '''Runs the page's own JavaScript in headless Chromium, through Playwright.'''
+
+    def __init__(self, headless=True):
         self.headless = headless
-        self.x_height_units = None
-        self.char_advance_units = None
-        self.n_styles = None
         self._page = None
-        self._draws = 0
 
-    def __enter__(self):
+    def open(self):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:                              # pragma: no cover
@@ -334,14 +360,70 @@ class Generator:
                                timeout=LOAD_TIMEOUT_MS)
         page.evaluate(_INSTALL_ATTENTION)
         self._page = page
-
         self.n_styles = int(page.evaluate("() => window.$.g.length / 64"))
-        if self.style is None:
-            self.style = random.Random(self.seed).randrange(self.n_styles)
-        elif not (0 <= self.style < self.n_styles):
-            raise GenerationError(
-                "style {} out of range; this model has {} styles (0-{})".format(
-                    self.style, self.n_styles, self.n_styles - 1))
+
+    def close(self):
+        try:
+            self._browser.close()
+        finally:
+            self._pw.stop()
+            self._site.__exit__(None, None, None)
+        self._page = None
+
+    def vocabulary(self):
+        return set(self._page.evaluate("() => Object.keys(window.H)"))
+
+    def sample(self, text, style, bias, seed, budget, max_x, stall_x):
+        raw = self._page.evaluate(_SAMPLE, {
+            "text": text, "style": style, "bias": bias, "seed": seed, "budget": budget,
+            "maxX": max_x, "stallX": stall_x})
+        return [tuple(p) for p in raw["points"]], raw["reason"]
+
+
+class Generator:
+    '''
+    A loaded model, ready to draw.
+
+    Held open across a document so the 2.65 MB model is loaded once. Use it as a context
+    manager:
+
+        with Generator(style=7, seed=1) as gen:
+            lines = gen.flow("some words to set".split(), width_units=400)
+
+    `backend` is "numpy" (the default: model.py's port of the network) or "browser" (the
+    page's own JavaScript in headless Chromium). A seed draws the same strokes on both.
+    '''
+
+    def __init__(self, style=None, bias=0.75, seed=None, tries=3, headless=True,
+                 backend="numpy"):
+        if backend not in BACKENDS:
+            raise GenerationError("unknown backend {!r}; choose from {}".format(
+                backend, ", ".join(BACKENDS)))
+        self.style = style
+        self.bias = bias
+        self.seed = seed if seed is not None else random.randrange(2 ** 31)
+        self.tries = tries
+        self.backend = backend
+        self.x_height_units = None
+        self.char_advance_units = None
+        self.n_styles = None
+        self._backend = (NumpyBackend if backend == "numpy" else BrowserBackend)(
+            headless=headless)
+        self._draws = 0
+
+    def __enter__(self):
+        self._backend.open()
+        self.n_styles = self._backend.n_styles
+        try:
+            if self.style is None:
+                self.style = random.Random(self.seed).randrange(self.n_styles)
+            elif not (0 <= self.style < self.n_styles):
+                raise GenerationError(
+                    "style {} out of range; this model has {} styles (0-{})".format(
+                        self.style, self.n_styles, self.n_styles - 1))
+        except GenerationError:
+            self._backend.close()
+            raise
 
         known = styles.lookup(self.style)
         if known:
@@ -349,16 +431,11 @@ class Generator:
         return self
 
     def __exit__(self, *exc):
-        try:
-            self._browser.close()
-        finally:
-            self._pw.stop()
-            self._site.__exit__(*exc)
-        self._page = None
+        self._backend.close()
 
     def vocabulary(self):
         '''The model's character set; anything outside it is drawn as garbage.'''
-        return set(self._page.evaluate("() => Object.keys(window.H)"))
+        return self._backend.vocabulary()
 
     # -- sampling -----------------------------------------------------------------------
 
@@ -381,11 +458,10 @@ class Generator:
                 self._draws += 1
             else:
                 draw_seed = (seed + 1_000_003 * attempt) % 2 ** 32
-            raw = self._page.evaluate(_SAMPLE, {
-                "text": text, "style": self.style, "bias": self.bias, "seed": draw_seed,
-                "budget": STEPS_PER_CHAR_BUDGET * max(1, len(text)), "maxX": max_x,
-                "stallX": STALL_CHARS * advance})
-            result = Draw(text, [tuple(p) for p in raw["points"]], raw["reason"], draw_seed)
+            points, reason = self._backend.sample(
+                text, self.style, self.bias, draw_seed,
+                STEPS_PER_CHAR_BUDGET * max(1, len(text)), max_x, STALL_CHARS * advance)
+            result = Draw(text, points, reason, draw_seed)
             if result.reason in ("finished", "width"):
                 break
         return result
@@ -535,7 +611,7 @@ def _split_word(word, fraction):
 
 
 def generate(paragraphs, width_units, style=None, bias=0.75, seed=None, tries=3,
-             headless=True, progress=None):
+             headless=True, progress=None, backend="numpy"):
     '''
     Generate handwriting for a list of paragraphs. A convenience wrapper around Generator.
 
@@ -546,18 +622,19 @@ def generate(paragraphs, width_units, style=None, bias=0.75, seed=None, tries=3,
     bias         legibility; the site's slider runs 0.15 (loose) to 2.5 (neat)
     seed         base seed for reproducible output; one is chosen and recorded if omitted
     tries        re-draw a line this many times if it runs out of steps
+    backend      "numpy" or "browser"; see Generator
     progress     optional callback(Line)
     '''
     if isinstance(paragraphs, str):
         paragraphs = [normalize_text(paragraphs).split(" ")]
     with Generator(style=style, bias=bias, seed=seed, tries=tries,
-                   headless=headless) as gen:
+                   headless=headless, backend=backend) as gen:
         warn_unsupported(gen, paragraphs)
         return gen.document(paragraphs, width_units, progress=progress)
 
 
 def warn_unsupported(generator, paragraphs):
-    '''The model's vocabulary lives in the page's `H` global; anything missing maps to id 1.'''
+    '''Anything outside the model's vocabulary (the page's `H` table) maps to id 1.'''
     vocab = generator.vocabulary()
     text = " ".join(" ".join(p) for p in paragraphs if p)
     bad = sorted({c for c in text if c not in vocab and c != " "})

@@ -2,12 +2,13 @@
 '''
 Self-test for the pipeline.
 
-By default it runs only the parts that need no browser, using the sample files in input/.
-Pass --online to also exercise generation, which downloads nothing but does start headless
-Chromium and takes a few seconds.
+By default it runs only the parts that need no model, using the sample files in input/.
+Pass --online to also exercise generation, which takes a few seconds; add --backend browser
+to run it in headless Chromium instead of numpy.
 
     tools/selftest.py
     tools/selftest.py --online
+    tools/selftest.py --online --backend browser
 '''
 
 import argparse
@@ -295,12 +296,13 @@ def test_style_table():
 
 
 def test_online(args):
-    section("generation (headless browser)")
+    section("generation ({} backend)".format(args.backend))
     import statistics
     from handwriting_helper.generate import Generator, generate
 
-    first = generate("repeatable", width_units=400, style=7, seed=4242)
-    second = generate("repeatable", width_units=400, style=7, seed=4242)
+    first = generate("repeatable", width_units=400, style=7, seed=4242, backend=args.backend)
+    second = generate("repeatable", width_units=400, style=7, seed=4242,
+                      backend=args.backend)
     check("a seed makes generation reproducible",
           first.lines[0].strokes == second.lines[0].strokes)
     check("the style's size comes from the table",
@@ -311,7 +313,7 @@ def test_online(args):
     # so the measurements are comparable, and each is measured over several seeds because a
     # single sample carries a spread of its own.
     short, long = "noun once", "noun once moxe suna comun ecoun samu nexo con" * 2
-    with Generator(style=7, seed=11) as gen:
+    with Generator(style=7, seed=11, backend=args.backend) as gen:
         heights = {t: statistics.median(
             estimate_x_height(Line(text=t, strokes=gen.draw(t).strokes()))
             for _ in range(3)) for t in (short, long)}
@@ -334,7 +336,7 @@ def test_online(args):
           long_draw.finished and len(long_draw.word_ends) == len(long_draw.words),
           "{} of {} words".format(len(long_draw.word_ends), len(long_draw.words)))
 
-    section("line filling (headless browser)")
+    section("line filling ({} backend)".format(args.backend))
     check("every word is set exactly once, in order",
           " ".join(l.text for l in lines) == " ".join(words))
     widths = [max(p[0] for p in l.points) for l in lines]
@@ -360,7 +362,9 @@ def _raises(name, exc, fn, *a, **kw):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     ap.add_argument("--online", action="store_true",
-                    help="also test generation, which starts headless Chromium")
+                    help="also test generation")
+    ap.add_argument("--backend", choices=("numpy", "browser"), default="numpy",
+                    help="which backend --online generates with (default: %(default)s)")
     args = ap.parse_args(argv)
 
     test_paragraphs()

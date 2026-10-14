@@ -273,7 +273,5 @@ def _warn_overflow(pages, ml, mr):
         if box is not None:
             over = max(over, box[2] - (page.width_mm - mr), ml - box[0])
     if over > _OVERFLOW_TOLERANCE_MM:
-        print("warning: text overruns the side margins by {:.1f} mm. Lines are broken when "
-              "they are generated, so re-laying saved strokes onto a narrower page or at a "
-              "larger size does not re-break them; generate again instead.".format(over),
+        print("warning: text overruns the side margins by {:.1f} mm. Generate again if this is a problem.".format(over),
               file=sys.stderr)

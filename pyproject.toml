@@ -5,9 +5,11 @@ description = "Turn text into plotter G-code that mimics human handwriting"
 requires-python = ">=3.11"
 license = { text = "GPL-3.0-or-later" }
 dependencies = [
-    "playwright>=1.40",
     "numpy>=1.24",
 ]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.40"]
 
 [project.scripts]
 handwrite = "handwriting_helper.cli:main"
