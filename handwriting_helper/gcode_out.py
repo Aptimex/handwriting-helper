@@ -180,11 +180,12 @@ def bed_sections(page, profile):
     '''
     Cut a page that is taller than the bed into bands that each fit its Y travel.
 
-    Cuts only fall between text lines, never through one. The lines that are already in reach
-    with the paper in its usual place form one band that needs no shift; the lines either side
-    of them are grouped into as few bands as fit, each with the paper slid along Y by a whole
-    number of millimetres so it can be measured. Returns a list of Section, top of the page
-    first. A page that fits, or a profile without a bed, gives a single unshifted Section.
+    Cuts only fall between text lines, never through one, and the page is cut into as few
+    bands as fit. Where that number allows, the lines already in reach with the paper in its
+    usual place form one band that needs no shift; every other band has the paper slid along
+    Y by a whole number of millimetres so it can be measured. Returns a list of Section, top
+    of the page first. A page that fits, or a profile without a bed, gives a single unshifted
+    Section.
     '''
     bed = profile["bed"]
     lines = [_place(line, page, profile) for line in page.lines if line]
@@ -197,14 +198,17 @@ def bed_sections(page, profile):
         return [Section(everything)]
 
     ranges = [_y_range(line) for line in lines]
+    groups = _group(ranges, 0, len(lines), bed[1])
     in_reach = [i for i, (l, h) in enumerate(ranges) if l >= 0 and h <= bed[1]]
     if in_reach:
         # Machine y is monotonic down the page, so the lines in reach are one contiguous run.
+        # Keeping them as a band that needs no paper move is only worth it when it costs no
+        # extra part: text that fits the bed in one go is better written with one slide.
         start, stop = in_reach[0], in_reach[-1] + 1
-        groups = (_group(ranges, 0, start, bed[1]) + [list(range(start, stop))]
-                  + _group(ranges, stop, len(lines), bed[1]))
-    else:
-        groups = _group(ranges, 0, len(lines), bed[1])
+        anchored = (_group(ranges, 0, start, bed[1]) + [list(range(start, stop))]
+                    + _group(ranges, stop, len(lines), bed[1]))
+        if len(anchored) <= len(groups):
+            groups = anchored
 
     sections = []
     for group in groups:
@@ -327,6 +331,13 @@ def write_gcode(page, path, profile, smooth=False, fit_error=1.0, simplify_tol=0
     placement = describe_shift(section, profile) if section is not None else None
     if placement:
         emit("; paper: " + placement)
+    # Read back by tools/gcode_preview.py to draw the paper and the bed. The paper spans
+    # this corner to corner + (width, height) in machine coordinates, whichever way Y runs.
+    ox, oy = profile["origin"]
+    shift = section.shift_y if section is not None else 0.0
+    emit("; paper corner: X{} Y{}".format(_fmt(ox), _fmt(oy + shift)))
+    if profile["bed"]:
+        emit("; bed: {} x {} mm".format(_fmt(profile["bed"][0]), _fmt(profile["bed"][1])))
     emit("; strokes: {}, points: {}".format(
         len(prepared), sum(len(s) for s in prepared)))
     emit("; pen down Z{} / up Z{} -- check this against your pen before running".format(

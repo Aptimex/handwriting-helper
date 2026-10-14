@@ -108,11 +108,11 @@ The number that matters is `pen_down_z`. Home the machine, jog Z down until the 
 tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 ```
 
-`tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red. It is the cheapest way to catch an inverted axis or a pen that never lifts.
+`tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header; for a file without a bed, pass `--profile` to draw one, and `--no-frame` hides them.
 
 No profile ever emits heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
 
-`handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. A page taller than the bed — A4 or Letter on a 220 or 256 mm bed — is cut between lines into lettered parts, `-p1a`, `-p1b`, …, each of which fits. The lines already in reach with the paper in its usual place make up one part that needs no paper move; for each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres, for example:
+`handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. Text that spans more of the page than the bed's Y travel — possible with A4 or Letter on a 220 or 256 mm bed — is cut between lines into as few lettered parts as fit, `-p1a`, `-p1b`, …. Text that fits in one go stays in one file, even if part of it starts out of reach. Where it costs no extra part, the lines already in reach with the paper in its usual place make up a part that needs no paper move; for each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres, for example:
 
 ```
 ; paper: slide the paper 19 mm toward Y0 along Y, so the page corner that normally sits on the origin is at X18 Y-1

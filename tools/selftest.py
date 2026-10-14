@@ -274,6 +274,14 @@ def test_bed_sections():
     check("shifts are whole millimetres", all(p.shift_y == int(p.shift_y) for p in parts))
     check("the part in reach as laid needs no shift",
           [p.shift_y == 0 for p in parts].count(True) == 1)
+    # A Letter page whose text fills only its top: the text is out of reach as laid, and
+    # straddles the edge of reach, but is far shorter than the bed. One slide covers it.
+    top_heavy = page_of(279.4, [float(y) for y in range(20, 120, 10)])
+    top_parts = bed_sections(top_heavy, profile)
+    check("text shorter than the bed is one part, however it sits on the page",
+          len(top_parts) == 1 and top_parts[0].shift_y != 0,
+          [p.shift_y for p in top_parts])
+
     unshifted = to_machine(tall, profile)
     shifted = [(x, y - p.shift_y) for p in parts for s in p.strokes for x, y in s]
     check("parts are only translated along Y",
@@ -284,6 +292,14 @@ def test_bed_sections():
         write_gcode(tall, target, profile, section=parts[0])
         check("a shifted part says where the paper goes",
               "; paper: slide the paper" in target.read_text())
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from gcode_preview import parse_frame
+        page_mm, corner, bed = parse_frame(target)
+        ox, oy = profile["origin"]
+        check("the preview reads the paper and bed back from the header",
+              page_mm == (tall.width_mm, tall.height_mm)
+              and corner == (ox, oy + parts[0].shift_y) and bed == tuple(profile["bed"]),
+              (page_mm, corner, bed))
 
 
 def test_style_table():
