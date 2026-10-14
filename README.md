@@ -3,7 +3,7 @@
 Turn text into G-code that a 3D printer can plot in a way that mimics the strokes of human handwriting.
 
 ```bash
-./handwrite.py --file letter.txt -o output/letter.gcode --profile generic-256
+./handwrite.py --file letter.txt --profile generic-256    # -> output/letter.gcode and output/letter.svg
 ```
 
 ![example output](docs/example.svg)
@@ -39,29 +39,28 @@ Requires python 3.11 or newer. If you already cloned without `--recurse-submodul
 ## Use
 
 ```
-# a single line, straight to G-code
-./handwrite.py "Hello world" -o output/hello.gcode --profile ender3
+# a single line -> output/hello.gcode and output/hello.svg
+./handwrite.py "Hello world" --name hello --profile ender3
 
-# a whole text file, reflowed into lines that fill an A5 page, split into as many pages as needed
-./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page a5
+# a whole text file on A5 paper, split into as many pages as needed -> output/letter.*
+./handwrite.py --file letter.txt --profile ender3 --page a5
 
 # the same, but assuming the paper fills the entire bed
-./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page fit
+./handwrite.py --file letter.txt --profile ender3 --page fit
 
-# see it before you print it
-./handwrite.py --file letter.txt -o output/letter.gcode --preview output/letter.svg
-
-# SVG output instead of G-code, if you'd rather keep your own G-code workflow
-./handwrite.py --file letter.txt -o output/letter.svg
+# only the SVG, if you'd rather keep your own G-code workflow, into another folder
+./handwrite.py --file letter.txt --format svg --out-dir ~/plots
 ```
 
-A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVG output and `--preview` are never cut.
+Every run writes a G-code file and an SVG of the same page into `--out-dir` (default `output/` in the current directory, created if needed). They are named after the input file without its extension, or `--name`, or `handwriting` for text given on the command line. Existing files are overwritten; with `--no-overwrite` the whole set is written as `letter (1).gcode`, `letter (1).svg`, ... instead.
+
+A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVGs are never cut.
 
 Generating strokes is the slow, random part. You can save the raw strokes output and re-render them them later into SVG or G-code, with a different profile, smoothing, simplification, etc:
 
 ```
-./handwrite.py --file letter.txt --save-strokes output/letter.strokes.json -o output/a.gcode
-./handwrite.py --strokes output/letter.strokes.json --smooth -o output/b.gcode
+./handwrite.py --file letter.txt --save-strokes output/letter.strokes.json
+./handwrite.py --strokes output/letter.strokes.json --smooth --name letter-smooth
 ```
 
 However, line breaks are chosen during the stroke generation step against the page width at the requested size. So re-laying saved strokes onto a narrower page or at a larger `--x-height-mm` won't re-break them; you get a warning if they overrun the margins, and should generate again instead.
@@ -75,11 +74,12 @@ Run `./handwrite.py --help` for the full list. The main options:
 | `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. Without one, a seed is chosen and printed, so a run you like can be repeated. |
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
 | `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
-| `--keep-breaks` | Honour the line breaks in your input instead of reflowing each paragraph. |
-| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout. `--page fit` makes the page the area of the `--profile`'s bed the pen can reach, so any sheet that covers it works; margins are measured from the edges of that area. |
+| `--reflow` | Treat the input as pre-wrapped: join single line breaks and reflow each paragraph, so only blank lines separate paragraphs. By default every line break in the input is kept. |
+| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the area of the `--profile`'s bed the pen can reach, so any sheet that covers it works; margins are measured from the edges of that area. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
+| `--out-dir`, `--name`, `--format`, `--no-overwrite` | Where the files go, what they are called, whether to write `both` (default), `gcode` or `svg`, and whether to keep existing files. |
 
 ## Text reflow
 
@@ -93,7 +93,7 @@ To solve this, each line is drawn with more words than should fit, and then cut 
 
 Sampling stops as soon as the pen passes the line width, so the extra words don't actually burn time getting generated.
 
-A word too wide for a line on its own is split across lines. Input that arrives already hard-wrapped is reflowed paragraph by paragraph first, otherwise every original line break would leave a short orphan behind; blank lines still separate paragraphs. Use `--keep-breaks` for text where the line breaks are deliberate, such as an address block or a poem.
+A word too wide for a line on its own is split across lines. Every line break in the input is kept, and a line too long for the page is wrapped. For input that arrives already hard-wrapped, use `--reflow`: it joins each paragraph onto one line first, otherwise every original line break would leave a short orphan behind; blank lines still separate paragraphs.
 
 Pages are then simple: every line is the same pitch apart, so a page holds a fixed number of lines and the rest continue on the next.
 
@@ -104,7 +104,7 @@ G-code is written from a profile. Two are included, both commented: `profiles/en
 The number that matters is `pen_down_z`. Home the machine, jog Z down until the pen reliably marks the paper while moving, and use that value. Then sanity check the result by "writing" 5mm above the bed before committing to it:
 
 ```
-./handwrite.py "test" -o output/test.gcode --profile generic-256 --dry-run-z 5
+./handwrite.py "test" --name test --format gcode --profile generic-256 --dry-run-z 5
 tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 ```
 
@@ -173,5 +173,3 @@ AGPL-3.0-or-later. The `fitCurves` submodule is MIT.
 
 ## TODO
 - Handle or warn about pen offset vs nozzle.
-- Treat single newlines as newlines, not pre-wrapped text
-- Default to Letter

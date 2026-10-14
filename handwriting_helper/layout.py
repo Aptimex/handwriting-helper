@@ -123,7 +123,7 @@ def text_width_mm(page, margin_mm):
     return width
 
 
-def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=None,
+def layout(document, page="letter", margin_mm=10.0, x_height_mm=3.0, line_pitch_mm=None,
            align="left", mm_per_unit=None, warn=True):
     '''
     Lay a document out on as many pages as it needs. Returns a list of Page.

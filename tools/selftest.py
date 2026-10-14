@@ -51,13 +51,13 @@ def test_paragraphs():
     flowed = reflow("one\ntwo\n\nthree\nfour\n")
     check("a paragraph is joined onto one line", flowed == "one two\n\nthree four", repr(flowed))
     check("runs of blank lines collapse", reflow("a\n\n\n\nb") == "a\n\nb")
-    check("paragraphs become word lists with a gap between",
-          paragraphs("one\ntwo\n\nthree") == [["one", "two"], None, ["three"]])
-    check("--keep-breaks keeps every input line",
-          paragraphs("one\ntwo\n\nthree", keep_breaks=True)
-          == [["one"], ["two"], None, ["three"]])
+    check("by default every input line is kept",
+          paragraphs("one\ntwo\n\nthree") == [["one"], ["two"], None, ["three"]])
+    check("--reflow makes paragraphs of word lists with a gap between",
+          paragraphs("one\ntwo\n\nthree", reflow_text=True)
+          == [["one", "two"], None, ["three"]])
     check("leading and trailing blank lines are dropped",
-          paragraphs("\n\nhi\n\n\n", keep_breaks=True) == [["hi"]])
+          paragraphs("\n\nhi\n\n\n") == [["hi"]])
 
 
 def _points(spec):

@@ -254,17 +254,17 @@ def reflow(text):
     return "\n\n".join(paragraphs)
 
 
-def paragraphs(text, keep_breaks=False):
+def paragraphs(text, reflow_text=False):
     '''
     Split input text into paragraphs of words, with None for each blank line between them.
 
-    By default each paragraph is reflowed, so line breaks are decided by the page width.
-    Without that, text that arrives already hard-wrapped would be re-wrapped line by line and
-    every original line would leave a short orphan behind. With keep_breaks every input line
-    is its own paragraph -- for text whose breaks are deliberate, like an address or a poem.
-    Lines that are still too wide for the page are wrapped either way.
+    By default every input line is its own paragraph, so a line break in the input is a line
+    break on the page. With reflow_text, single line breaks are joined and only blank lines
+    separate paragraphs -- for text that arrives already hard-wrapped, which would otherwise
+    leave a short orphan behind at every original break. Lines that are too wide for the
+    page are wrapped either way.
     '''
-    source = text if keep_breaks else reflow(text)
+    source = reflow(text) if reflow_text else text
     out = []
     for raw in source.splitlines():
         words = normalize_text(raw)
