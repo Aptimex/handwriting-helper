@@ -25,8 +25,9 @@ park         = [128.0, 250.0]   # back centre, out of the way
 flip_y       = true     # page top is away from you, the usual way to lay paper on a bed
 pen_dwell_ms = 0        # raise to ~100 if a spring-loaded pen needs time to settle
 
-# A 256 x 256 bed fits A5 (148 x 210) comfortably and A4 (210 x 297) not at all.
-# Use --page a5, --page fit, or a custom size such as --page 200x200.
+# A 256 x 256 bed fits A5 (148 x 210) comfortably. Taller pages such as A4 (210 x 297) or
+# Letter (216 x 279) are written in parts (-p1a, -p1b, ...) with the paper slid along Y between
+# them; each part's G-code says where the paper goes.
 
 preamble = [
   "G21",        # millimetres

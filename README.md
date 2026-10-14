@@ -42,6 +42,9 @@ Python 3.11 or newer. If you already cloned without `--recurse-submodules`, run 
 # a whole letter, broken into lines that fill the page, onto as many pages as it takes
 ./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page a5
 
+# the same, using as much of the bed as the pen can reach
+./handwrite.py --file letter.txt -o output/letter.gcode --profile ender3 --page fit
+
 # see it before you print it
 ./handwrite.py --file letter.txt -o output/letter.gcode --preview output/letter.svg
 
@@ -49,7 +52,7 @@ Python 3.11 or newer. If you already cloned without `--recurse-submodules`, run 
 ./handwrite.py --file letter.txt -o output/letter.svg
 ```
 
-A text that runs past one page is written as numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on — one per sheet of paper.
+A text that runs past one page is written as numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on — one per sheet of paper. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, … (see [Printer profiles](#printer-profiles)). SVG output and `--preview` are never cut.
 
 Generating is the slow, random part. Save the strokes once and you can re-render them — SVG or G-code, a different profile, smoothing, simplification — without generating again:
 
@@ -70,7 +73,7 @@ Run `./handwrite.py --help` for the full list. The options worth knowing:
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
 | `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
 | `--keep-breaks` | Honour the line breaks in your input instead of reflowing each paragraph. |
-| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout. `--page fit` crops to the ink. |
+| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout. `--page fit` makes the page the area of the `--profile`'s bed the pen can reach, so any sheet that covers it works; margins are measured from the edges of that area. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
@@ -111,7 +114,15 @@ tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 
 No profile ever emits heater, fan or extruder commands. If your machine needs any, put them in the profile's `preamble`.
 
-`handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. Note that an A4 page fits neither a 220 nor a 256 mm bed: use `--page a5`, `--page fit`, or a custom size such as `--page 200x200`.
+`handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. A page taller than the bed — A4 or Letter on a 220 or 256 mm bed — is cut between lines into lettered parts, `-p1a`, `-p1b`, …, each of which fits. The lines already in reach with the paper in its usual place make up one part that needs no paper move; for each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres, for example:
+
+```
+; paper: slide the paper 19 mm toward Y0 along Y, so the page corner that normally sits on the origin is at X18 Y-1
+```
+
+A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, or `--page fit`.
+
+`--page fit` sizes the page to the bed instead: the bed less the profile's origin, so 238 × 238 mm on `generic-256` and 200 × 200 mm on `ender3`. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, …, and nothing ever needs cutting. Lay any sheet that covers the area with its corner on the origin. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
 
 ## How it works
 
@@ -161,3 +172,6 @@ tools/selftest.py --online   # also generation: reproducibility, scale, long dra
 ## License
 
 GPL-3.0-or-later. The `fitCurves` submodule is MIT.
+
+## TODO
+- Handle or warn about pen offset vs nozzle.

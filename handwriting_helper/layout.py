@@ -44,12 +44,18 @@ class LayoutError(ValueError):
 
 
 def parse_page(spec):
-    '''"a4", "letter", "120x80" (mm), or "fit" for a page cropped to the ink.'''
-    if spec is None:
-        return None
+    '''
+    "a4", "letter", "120x80" (mm), or a (width, height) pair -> (width, height) in mm.
+
+    "fit" (the reachable area of a printer's bed) is not handled here: it depends on the
+    printer profile, so the caller resolves it to a size first.
+    '''
+    if isinstance(spec, (tuple, list)):
+        w, h = (float(v) for v in spec)
+        if w <= 0 or h <= 0:
+            raise LayoutError("page dimensions must be positive: {!r}".format(spec))
+        return (w, h)
     key = str(spec).strip().lower()
-    if key == "fit":
-        return "fit"
     if key in PAGE_SIZES:
         return PAGE_SIZES[key]
     if "x" in key:
@@ -60,17 +66,24 @@ def parse_page(spec):
         if w <= 0 or h <= 0:
             raise LayoutError("page dimensions must be positive: {!r}".format(spec))
         return (w, h)
-    raise LayoutError("unknown page size {!r}; try one of {}, WxH in mm, or 'fit'".format(
+    raise LayoutError("unknown page size {!r}; try one of {}, or WxH in mm".format(
         spec, ", ".join(sorted(PAGE_SIZES))))
 
 
 class Page:
-    '''Laid-out ink in millimetres, y growing downward from the top-left corner.'''
+    '''
+    Laid-out ink in millimetres, y growing downward from the top-left corner.
 
-    def __init__(self, width_mm, height_mm, strokes, mm_per_unit, x_height_mm, line_pitch_mm):
+    `lines` keeps the strokes grouped by text line, top to bottom, so a page can later be cut
+    between lines (G-code for a page taller than the bed). `strokes` is the same ink, flat.
+    '''
+
+    def __init__(self, width_mm, height_mm, strokes, mm_per_unit, x_height_mm, line_pitch_mm,
+                 lines=None):
         self.width_mm = width_mm
         self.height_mm = height_mm
         self.strokes = strokes
+        self.lines = lines if lines is not None else [strokes]
         self.mm_per_unit = mm_per_unit
         self.x_height_mm = x_height_mm
         self.line_pitch_mm = line_pitch_mm
@@ -101,10 +114,8 @@ def resolve_scale(x_height_units, x_height_mm=3.0, mm_per_unit=None):
 
 
 def text_width_mm(page, margin_mm):
-    '''Width between the side margins, or None for a page cropped to the ink.'''
-    size = parse_page(page) if page is not None else "fit"
-    if size == "fit":
-        return None
+    '''Width between the side margins.'''
+    size = parse_page(page)
     ml, _, mr, _ = _margins(margin_mm)
     width = size[0] - ml - mr
     if width <= 0:
@@ -118,8 +129,7 @@ def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=N
     Lay a document out on as many pages as it needs. Returns a list of Page.
 
     document       a Document of lines in model units
-    page           "a4" / "letter" / "WxH" / "fit" / None (same as "fit"); "fit" is always a
-                   single page cropped to the ink
+    page           "a4" / "letter" / "WxH" / (width, height) in mm
     margin_mm      single value, or (left, top, right, bottom)
     x_height_mm    target height of an x-height letter
     line_pitch_mm  baseline-to-baseline distance; defaults to DEFAULT_LINE_PITCH_RATIO times
@@ -135,7 +145,7 @@ def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=N
     if line_pitch_mm is None:
         line_pitch_mm = DEFAULT_LINE_PITCH_RATIO * x_height_mm
 
-    size = parse_page(page) if page is not None else "fit"
+    size = parse_page(page)
     ml, mt, mr, mb = _margins(margin_mm)
 
     # Scale every line about its own baseline; None marks a blank line.
@@ -148,19 +158,6 @@ def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=N
                      for stroke in line.strokes])
     if not any(rows):
         raise LayoutError("nothing to lay out: the document has no ink")
-
-    if size == "fit":
-        placed = _stack(rows, line_pitch_mm)
-        if warn:
-            _warn_collisions(placed)
-        strokes = [s for ss in placed for s in ss]
-        xs = [p[0] for s in strokes for p in s]
-        ys = [p[1] for s in strokes for p in s]
-        width = (max(xs) - min(xs)) + ml + mr
-        height = (max(ys) - min(ys)) + mt + mb
-        dx, dy = ml - min(xs), mt - min(ys)
-        out = [[(x + dx, y + dy) for x, y in s] for s in strokes]
-        return [Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm)]
 
     width, height = size
     text_width = width - ml - mr
@@ -178,7 +175,7 @@ def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=N
         placed = _stack(chunk, line_pitch_mm)
         if warn:
             _warn_collisions(placed)
-        out = []
+        lines = []
         for strokes in placed:
             xs = [p[0] for s in strokes for p in s]
             line_width = max(xs) - min(xs)
@@ -188,8 +185,9 @@ def layout(document, page="a4", margin_mm=20.0, x_height_mm=3.0, line_pitch_mm=N
                 dx = ml + (text_width - line_width) / 2.0 - min(xs)
             else:
                 dx = ml + text_width - line_width - min(xs)
-            out.extend([[(x + dx, y + first_baseline) for x, y in s] for s in strokes])
-        pages.append(Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm))
+            lines.append([[(x + dx, y + first_baseline) for x, y in s] for s in strokes])
+        out = [s for line in lines for s in line]
+        pages.append(Page(width, height, out, mm_per_unit, x_height_mm, line_pitch_mm, lines))
     if warn:
         _warn_overflow(pages, ml, mr)
     return pages

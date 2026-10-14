@@ -7,14 +7,13 @@ from pathlib import Path
 from . import __version__
 from .strokes import Document, MODEL_CHAR_ADVANCE, paragraphs
 from .layout import (
-    DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, resolve_scale, text_width_mm)
-from .gcode_out import BedLimitError, ProfileError, load_profile, write_gcode
+    DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, parse_page, resolve_scale, text_width_mm)
+from .gcode_out import (
+    BedLimitError, ProfileError, bed_sections, describe_shift, load_profile, reachable_area,
+    write_gcode)
 from .svg_out import write_svg
 
 GCODE_SUFFIXES = {".gcode", ".gco", ".g", ".nc", ".ngc"}
-
-# Line length, in characters, when there is no page width to fill (--page fit).
-FIT_PAGE_CHARS = 60
 
 
 def build_parser():
@@ -39,8 +38,7 @@ Chromium. Nothing is sent anywhere.""")
                      help="reuse a saved strokes file instead of generating again")
     src.add_argument("--wrap", default="fit", metavar="N",
                      help="line length: 'fit' fills the width between the margins, a number "
-                          "asks for lines of about N characters (default: %(default)s; "
-                          "{} with --page fit)".format(FIT_PAGE_CHARS))
+                          "asks for lines of about N characters (default: %(default)s)")
     src.add_argument("--keep-breaks", action="store_true",
                      help="honour the line breaks in the input instead of reflowing each "
                           "paragraph to the page width")
@@ -69,7 +67,9 @@ Chromium. Nothing is sent anywhere.""")
                      help="baseline to baseline distance (default: {:g} x the "
                           "x-height)".format(DEFAULT_LINE_PITCH_RATIO))
     lay.add_argument("--page", default="a4", metavar="SPEC",
-                     help="a3/a4/a5/a6/letter/legal, WxH in mm, or 'fit' to crop to the ink "
+                     help="a3/a4/a5/a6/letter/legal, WxH in mm, or 'fit' for the area of the "
+                          "--profile's bed the pen can reach, so any sheet that covers it "
+                          "works; margins are then measured from the edges of that area "
                           "(default: %(default)s)")
     lay.add_argument("--margin", default="20", metavar="MM",
                      help="page margin: one value, 'H,V', or 'L,T,R,B' (default: %(default)s)")
@@ -79,7 +79,8 @@ Chromium. Nothing is sent anywhere.""")
     out = p.add_argument_group("output")
     out.add_argument("--outfile", "-o", default="output/output.gcode", metavar="PATH",
                      help="output path; the format follows the extension. A text that runs "
-                          "to several pages is written as NAME-p1, NAME-p2, ... "
+                          "to several pages is written as NAME-p1, NAME-p2, ...; G-code for a "
+                          "page taller than the bed is cut into parts NAME-p1a, NAME-p1b, ... "
                           "(default: %(default)s)")
     out.add_argument("--format", choices=("auto", "gcode", "svg"), default="auto",
                      help="override the format implied by the extension")
@@ -128,7 +129,20 @@ def _parse_margin(spec):
     raise LayoutError("--margin takes one, two or four numbers (got {!r})".format(spec))
 
 
-def _line_width_units(args, wrap, x_height_units, advance_units):
+def _resolve_page(args, profile):
+    '''--page as (width, height) in mm, taking 'fit' from the profile's bed.'''
+    if str(args.page).strip().lower() != "fit":
+        return parse_page(args.page)
+    if not profile["bed"]:
+        raise SystemExit("--page fit sizes the page to the printer's bed, so it needs a "
+                         "--profile that declares one")
+    try:
+        return reachable_area(profile)
+    except ProfileError as exc:
+        raise SystemExit("profile error: {}".format(exc))
+
+
+def _line_width_units(args, page, wrap, x_height_units, advance_units):
     '''
     How wide a line may be, in model units: the space between the margins at the requested
     size, or about `wrap` characters of this style.
@@ -136,21 +150,23 @@ def _line_width_units(args, wrap, x_height_units, advance_units):
     The generator breaks lines against this by measuring real ink, so it is a hard limit
     rather than an estimate.
     '''
-    margins = _parse_margin(args.margin)
-    width_mm = text_width_mm(args.page, margins)
-    if wrap == "fit" and width_mm is not None:
+    if wrap == "fit":
+        width_mm = text_width_mm(page, _parse_margin(args.margin))
         mm_per_unit, _ = resolve_scale(x_height_units, args.x_height_mm, args.scale)
         return width_mm / mm_per_unit
-    chars = FIT_PAGE_CHARS if wrap == "fit" else wrap
-    return chars * (advance_units or MODEL_CHAR_ADVANCE)
+    return wrap * (advance_units or MODEL_CHAR_ADVANCE)
 
 
-def _numbered(path, index, total):
-    '''output.gcode -> output-p2.gcode, when there is more than one page.'''
-    if total == 1:
+def _numbered(path, index, total, part=0, parts=1):
+    '''
+    output.gcode -> output-p2.gcode, when there is more than one page, and
+    output-p2a.gcode, output-p2b.gcode, ... when a page is cut into bed-sized parts.
+    '''
+    if total == 1 and parts == 1:
         return Path(path)
     path = Path(path)
-    return path.with_name("{}-p{}{}".format(path.stem, index + 1, path.suffix))
+    letter = "abcdefghijklmnopqrstuvwxyz"[part] if parts > 1 else ""
+    return path.with_name("{}-p{}{}{}".format(path.stem, index + 1, letter, path.suffix))
 
 
 def _resolve_format(args):
@@ -193,6 +209,20 @@ def main(argv=None):
     log = (lambda *a: None) if args.quiet else (
         lambda *a: print(*a, file=sys.stderr, flush=True))
 
+    # --- profile and page ------------------------------------------------------------
+    # Both are settled before generating: the page width decides where lines break, and
+    # --page fit takes the page from the profile's bed.
+    try:
+        profile = load_profile(args.profile)
+        page = _resolve_page(args, profile)
+    except ProfileError as exc:
+        raise SystemExit("profile error: {}".format(exc))
+    except LayoutError as exc:
+        raise SystemExit("layout failed: {}".format(exc))
+    if str(args.page).strip().lower() == "fit":
+        log("page fit: {:g} x {:g} mm, the part of {}'s bed the pen can reach".format(
+            page[0], page[1], profile["name"]))
+
     # --- strokes -------------------------------------------------------------------
     if args.strokes:
         document = Document.from_json(Path(args.strokes).read_text(encoding="utf-8"))
@@ -215,7 +245,7 @@ def main(argv=None):
             with Generator(style=style, bias=args.bias, seed=args.seed, tries=args.tries,
                            headless=not args.headed) as gen:
                 warn_unsupported(gen, paras)
-                width = _line_width_units(args, wrap, gen.x_height_units,
+                width = _line_width_units(args, page, wrap, gen.x_height_units,
                                           gen.char_advance_units)
                 log("generating {} paragraph(s), style {}, seed {}, lines up to {:.0f} "
                     "model units".format(sum(p is not None for p in paras), gen.style,
@@ -238,7 +268,7 @@ def main(argv=None):
 
     # --- layout --------------------------------------------------------------------
     try:
-        pages = layout(document, page=args.page, margin_mm=_parse_margin(args.margin),
+        pages = layout(document, page=page, margin_mm=_parse_margin(args.margin),
                        x_height_mm=args.x_height_mm, line_pitch_mm=args.line_pitch,
                        align=args.align, mm_per_unit=args.scale)
     except LayoutError as exc:
@@ -262,11 +292,6 @@ def main(argv=None):
             log("wrote {} ({} paths)".format(target, count))
         return 0
 
-    try:
-        profile = load_profile(args.profile)
-    except ProfileError as exc:
-        raise SystemExit("profile error: {}".format(exc))
-
     if args.profile is None:
         log("no --profile given, using built-in defaults: pen down Z{:g}, up Z{:g}. "
             "Check these before running.".format(profile["pen_down_z"], profile["pen_up_z"]))
@@ -280,18 +305,35 @@ def main(argv=None):
 
     header = "text: {}".format(" / ".join(l.text for l in document.lines if l.text)[:200])
     for index, page in enumerate(pages):
-        target = _numbered(args.outfile, index, len(pages))
-        page_header = header
-        if len(pages) > 1:
-            page_header += "\npage {} of {}".format(index + 1, len(pages))
-        try:
-            stats = write_gcode(page, target, profile, smooth=args.smooth,
-                                fit_error=args.fit_error, simplify_tol=args.simplify_tol,
-                                header_comment=page_header)
-        except BedLimitError as exc:
-            raise SystemExit("refusing to write G-code: {}".format(exc))
-        log("wrote {}: {} strokes, {} points, {:.0f} mm drawn, ~{:.1f} min".format(
-            target, stats["strokes"], stats["points"], stats["draw_mm"], stats["minutes"]))
+        sections = bed_sections(page, profile)
+        if len(sections) > 26:
+            raise SystemExit("refusing to write G-code: the page would need {} bed-sized "
+                             "parts".format(len(sections)))
+        if len(sections) > 1:
+            log("page {} is taller than the bed's Y travel; writing it in {} parts".format(
+                index + 1, len(sections)))
+        for part, section in enumerate(sections):
+            target = _numbered(args.outfile, index, len(pages), part, len(sections))
+            page_header = header
+            if len(pages) > 1:
+                page_header += "\npage {} of {}".format(index + 1, len(pages))
+            if len(sections) > 1:
+                page_header += "\npart {} of {} of the page".format(
+                    "abcdefghijklmnopqrstuvwxyz"[part], len(sections))
+            try:
+                stats = write_gcode(page, target, profile, smooth=args.smooth,
+                                    fit_error=args.fit_error, simplify_tol=args.simplify_tol,
+                                    header_comment=page_header, section=section)
+            except BedLimitError as exc:
+                raise SystemExit("refusing to write G-code: {}".format(exc))
+            log("wrote {}: {} strokes, {} points, {:.0f} mm drawn, ~{:.1f} min".format(
+                target, stats["strokes"], stats["points"], stats["draw_mm"],
+                stats["minutes"]))
+            placement = describe_shift(section, profile)
+            if placement:
+                log("  before running it, " + placement)
+            elif len(sections) > 1:
+                log("  paper in its usual place")
 
         if args.preview:
             preview = _numbered(args.preview, index, len(pages))

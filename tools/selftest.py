@@ -20,10 +20,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from handwriting_helper.gcode_out import (
-    BedLimitError, ProfileError, flatten, load_profile, to_machine, write_gcode)
+    BedLimitError, ProfileError, bed_sections, flatten, load_profile, reachable_area, to_machine,
+    write_gcode)
 from handwriting_helper.generate import _word_ends
 from handwriting_helper.layout import (
-    DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, parse_page)
+    DEFAULT_LINE_PITCH_RATIO, LayoutError, Page, layout, parse_page)
 from handwriting_helper.strokes import (
     Document, Line, estimate_x_height, paragraphs, reflow, simplify, split_pen_flags)
 from handwriting_helper import styles
@@ -142,11 +143,6 @@ def test_layout():
     check("doubling the x-height doubles the ink",
           abs(_width(doubled) / _width(page) - 2.0) < 0.01)
 
-    fitted, = layout(document, page="fit", margin_mm=5, warn=False)
-    fbox = fitted.bbox()
-    check("'fit' crops to the ink plus the margin",
-          abs(fbox[0] - 5) < 0.6 and abs(fitted.width_mm - fbox[2] - 5) < 0.6, fbox)
-
     # Pagination: 30 lines with a gap in the middle, on a page that holds far fewer.
     line = document.lines[1]
     blank = Line(text="", blank=True)
@@ -194,6 +190,9 @@ def test_profiles():
     ender = load_profile("ender3")
     check("a profile is found by name", ender["name"] == "ender3")
     check("the bed is read", ender["bed"] == [220.0, 220.0], ender["bed"])
+    check("'fit' is the bed beyond the origin", reachable_area(ender) == (200.0, 200.0),
+          reachable_area(ender))
+    _raises("'fit' needs a bed", ProfileError, reachable_area, default)
     _raises("an unknown profile is rejected", ProfileError, load_profile, "no-such-printer")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -210,8 +209,8 @@ def test_output():
     document = _sample_document()
     if document is None:
         return
-    page, = layout(document, page="fit", margin_mm=5, warn=False)
     profile = load_profile("ender3")
+    page, = layout(document, page=reachable_area(profile), margin_mm=5, warn=False)
 
     with tempfile.TemporaryDirectory() as tmp:
         svg = Path(tmp) / "out.svg"
@@ -249,6 +248,41 @@ def test_output():
         big, = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
         _raises("a page that overruns the bed is refused", BedLimitError,
                 write_gcode, big, Path(tmp) / "big.gcode", profile)
+
+
+def test_bed_sections():
+    section("pages taller than the bed")
+    profile = load_profile("ender3")             # 220 x 220 bed, origin (10, 10)
+    bed_y = profile["bed"][1]
+
+    def page_of(height, baselines):
+        lines = [[[(20.0, y - 4.0), (60.0, y), (100.0, y + 2.0)]] for y in baselines]
+        return Page(150.0, height, [s for l in lines for s in l], 1.0, 3.0, 10.0, lines)
+
+    short = page_of(150.0, [20.0, 40.0, 60.0])
+    check("a page that fits is left whole", len(bed_sections(short, profile)) == 1)
+
+    tall = page_of(600.0, [float(y) for y in range(20, 590, 10)])
+    parts = bed_sections(tall, profile)
+    check("a page three bed-heights tall is cut into three parts", len(parts) == 3,
+          len(parts))
+    check("every line lands in exactly one part",
+          sum(len(p.strokes) for p in parts) == len(tall.lines))
+    check("every part fits the bed", all(
+        0 <= y <= bed_y for p in parts for s in p.strokes for _, y in s))
+    check("shifts are whole millimetres", all(p.shift_y == int(p.shift_y) for p in parts))
+    check("the part in reach as laid needs no shift",
+          [p.shift_y == 0 for p in parts].count(True) == 1)
+    unshifted = to_machine(tall, profile)
+    shifted = [(x, y - p.shift_y) for p in parts for s in p.strokes for x, y in s]
+    check("parts are only translated along Y",
+          sorted(shifted) == sorted(pt for s in unshifted for pt in s))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "part.gcode"
+        write_gcode(tall, target, profile, section=parts[0])
+        check("a shifted part says where the paper goes",
+              "; paper: slide the paper" in target.read_text())
 
 
 def test_style_table():
@@ -336,6 +370,7 @@ def main(argv=None):
     test_curves()
     test_profiles()
     test_output()
+    test_bed_sections()
     test_style_table()
     if args.online:
         test_online(args)

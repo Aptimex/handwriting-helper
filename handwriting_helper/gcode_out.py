@@ -87,6 +87,22 @@ def load_profile(spec):
     return profile
 
 
+def reachable_area(profile):
+    '''
+    The largest page the pen can reach, (width, height) in mm: the bed beyond the origin,
+    since the page's corner sits on the origin and the page extends from there.
+    '''
+    if not profile["bed"]:
+        raise ProfileError("profile {!r} declares no bed, so there is nothing to fit the page "
+                           "to".format(profile["name"]))
+    width = profile["bed"][0] - profile["origin"][0]
+    height = profile["bed"][1] - profile["origin"][1]
+    if width <= 0 or height <= 0:
+        raise ProfileError("profile {!r} puts the origin outside its bed".format(
+            profile["name"]))
+    return width, height
+
+
 def _flatten_bezier(p0, c1, c2, p3, tolerance):
     '''Subdivide a cubic until it is flat to `tolerance`, returning the points after p0.'''
     # Distance of the control points from the chord bounds the flatness error closely enough.
@@ -131,11 +147,109 @@ def to_machine(page, profile):
     its bottom-left corner lands on `origin`, which is what you get by laying the paper on the
     bed the right way up.
     '''
+    return _place(page.strokes, page, profile)
+
+
+def _place(strokes, page, profile):
     ox, oy = profile["origin"]
     if profile["flip_y"]:
         return [[(ox + x, oy + (page.height_mm - y)) for x, y in stroke]
-                for stroke in page.strokes]
-    return [[(ox + x, oy + y) for x, y in stroke] for stroke in page.strokes]
+                for stroke in strokes]
+    return [[(ox + x, oy + y) for x, y in stroke] for stroke in strokes]
+
+
+class Section:
+    '''
+    One bed-sized band of a page, in machine coordinates.
+
+    shift_y is how far the paper has to be moved along Y from its usual place (the page
+    corner on the profile's origin) for this band to be in reach: negative is toward Y0.
+    '''
+
+    def __init__(self, strokes, shift_y=0.0):
+        self.strokes = strokes
+        self.shift_y = shift_y
+
+
+def _y_range(strokes):
+    ys = [p[1] for s in strokes for p in s]
+    return min(ys), max(ys)
+
+
+def bed_sections(page, profile):
+    '''
+    Cut a page that is taller than the bed into bands that each fit its Y travel.
+
+    Cuts only fall between text lines, never through one. The lines that are already in reach
+    with the paper in its usual place form one band that needs no shift; the lines either side
+    of them are grouped into as few bands as fit, each with the paper slid along Y by a whole
+    number of millimetres so it can be measured. Returns a list of Section, top of the page
+    first. A page that fits, or a profile without a bed, gives a single unshifted Section.
+    '''
+    bed = profile["bed"]
+    lines = [_place(line, page, profile) for line in page.lines if line]
+    lines = [line for line in lines if any(line)]
+    everything = [s for line in lines for s in line]
+    if not bed or not everything:
+        return [Section(everything)]
+    lo, hi = _y_range(everything)
+    if lo >= 0 and hi <= bed[1]:
+        return [Section(everything)]
+
+    ranges = [_y_range(line) for line in lines]
+    in_reach = [i for i, (l, h) in enumerate(ranges) if l >= 0 and h <= bed[1]]
+    if in_reach:
+        # Machine y is monotonic down the page, so the lines in reach are one contiguous run.
+        start, stop = in_reach[0], in_reach[-1] + 1
+        groups = (_group(ranges, 0, start, bed[1]) + [list(range(start, stop))]
+                  + _group(ranges, stop, len(lines), bed[1]))
+    else:
+        groups = _group(ranges, 0, len(lines), bed[1])
+
+    sections = []
+    for group in groups:
+        strokes = [s for i in group for s in lines[i]]
+        lo, hi = _y_range(strokes)
+        if hi > bed[1]:
+            shift = -math.ceil(hi - bed[1])
+        elif lo < 0:
+            shift = math.ceil(-lo)
+        else:
+            shift = 0
+        if shift:
+            strokes = [[(x, y + shift) for x, y in s] for s in strokes]
+        sections.append(Section(strokes, float(shift)))
+    return sections
+
+
+def _group(ranges, start, stop, bed_y):
+    '''Greedily pack lines start..stop into runs that span no more than the bed.'''
+    # One millimetre in hand, so a band's shift can be rounded up to a whole millimetre.
+    limit = bed_y - 1.0
+    groups, current, lo, hi = [], [], None, None
+    for i in range(start, stop):
+        l, h = ranges[i]
+        if current and max(hi, h) - min(lo, l) > limit:
+            groups.append(current)
+            current = []
+        if not current:
+            lo, hi = l, h
+        current.append(i)
+        lo, hi = min(lo, l), max(hi, h)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def describe_shift(section, profile):
+    '''Paper placement instructions for a section, or None if the paper stays put.'''
+    if not section.shift_y:
+        return None
+    ox, oy = profile["origin"]
+    return ("slide the paper {:g} mm {} along Y, so the page corner that normally sits on the "
+            "origin is at X{:g} Y{:g}".format(
+                abs(section.shift_y), "toward Y0" if section.shift_y < 0 else "away from Y0",
+                ox, oy + section.shift_y))
 
 
 def check_bed(strokes, profile):
@@ -150,9 +264,9 @@ def check_bed(strokes, profile):
     if box[0] < 0 or box[1] < 0 or box[2] > bed[0] or box[3] > bed[1]:
         raise BedLimitError(
             "the drawing would run off the bed: it occupies X {:.1f}..{:.1f}, "
-            "Y {:.1f}..{:.1f} mm but the bed is {:g} x {:g} mm. Use a smaller --page (or "
-            "--page fit to crop to the ink), reduce --x-height-mm, or move the profile's "
-            "origin.".format(
+            "Y {:.1f}..{:.1f} mm but the bed is {:g} x {:g} mm. Use --page fit to size the "
+            "page to the bed, a smaller --page, a smaller --x-height-mm, or move the "
+            "profile's origin.".format(
                 box[0], box[2], box[1], box[3], bed[0], bed[1]))
 
 
@@ -161,15 +275,17 @@ def _fmt(v):
 
 
 def write_gcode(page, path, profile, smooth=False, fit_error=1.0, simplify_tol=0.0,
-                flatten_tol=0.05, header_comment=None):
+                flatten_tol=0.05, header_comment=None, section=None):
     '''
     Write a laid-out Page as G-code. Returns a stats dict.
+
+    `section`, from bed_sections(), writes just that band of the page instead of all of it.
 
     Raises BedLimitError rather than emitting moves that would drive into the bed's limits.
     '''
     from .svg_out import fit_beziers
 
-    strokes = to_machine(page, profile)
+    strokes = section.strokes if section is not None else to_machine(page, profile)
 
     prepared = []
     for stroke in strokes:
@@ -208,6 +324,9 @@ def write_gcode(page, path, profile, smooth=False, fit_error=1.0, simplify_tol=0
     emit("; profile: {}".format(profile["name"]))
     emit("; page: {:g} x {:g} mm, x-height {:.2f} mm".format(
         page.width_mm, page.height_mm, page.x_height_mm))
+    placement = describe_shift(section, profile) if section is not None else None
+    if placement:
+        emit("; paper: " + placement)
     emit("; strokes: {}, points: {}".format(
         len(prepared), sum(len(s) for s in prepared)))
     emit("; pen down Z{} / up Z{} -- check this against your pen before running".format(
