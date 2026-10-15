@@ -16,7 +16,11 @@ feed_draw    = 1500     # mm/min while drawing; slow enough that ink keeps up
 feed_travel  = 6000     # mm/min between strokes
 feed_z       = 900      # mm/min for pen lifts
 
-origin       = [20.0, 20.0]     # bottom-left corner of the page, in bed coordinates
+# The paper is laid flush against a corner of the bed, X0..X Y0..Y as `bed` gives it,
+# with "top" the back of the bed. If the plate's edge isn't where the pen reaches X0 or
+# its far limit, use the pen's reach rather than the plate's edge to place the paper.
+paper_anchor = "top-left"   # lay the paper against this corner of the bed; also
+                            # top-right, bottom-left, bottom-right, center, ...
 bed          = [220.0, 220.0]   # refuse to write G-code that leaves the bed
 park         = [0.0, 200.0]     # somewhere out of the way to finish
 

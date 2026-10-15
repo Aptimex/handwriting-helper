@@ -9,8 +9,8 @@ from .strokes import Document, MODEL_CHAR_ADVANCE, paragraphs
 from .layout import (
     DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, parse_page, resolve_scale, text_width_mm)
 from .gcode_out import (
-    BedLimitError, ProfileError, bed_sections, describe_shift, load_profile, reachable_area,
-    write_gcode)
+    ANCHORS, BedLimitError, ProfileError, bed_sections, describe_shift, load_profile,
+    reachable_area, write_gcode)
 from .svg_out import write_svg
 
 # Base name for the output files when the text was not read from a file.
@@ -102,6 +102,11 @@ completely locally.""")
                           "generating again")
     out.add_argument("--profile", default=None, metavar="NAME",
                      help="printer profile: a .toml path, or a name from profiles/")
+    out.add_argument("--paper-anchor", choices=ANCHORS, metavar="WHERE",
+                     help="where the paper is laid on the bed: flush against a corner or "
+                          "edge, or centred; one of {}. 'top' is the back of the bed "
+                          "(default: the profile's paper_anchor, else top-left)".format(
+                              ", ".join(ANCHORS)))
     out.add_argument("--smooth", "-s", action="store_true",
                      help="fit cubic beziers to the strokes; looks better at large sizes")
     out.add_argument("--fit-error", type=float, default=1.0, metavar="F",
@@ -240,6 +245,8 @@ def main(argv=None):
     # --page fit takes the page from the profile's bed.
     try:
         profile = load_profile(args.profile)
+        if args.paper_anchor:
+            profile["paper_anchor"] = args.paper_anchor
         page = _resolve_page(args, profile)
     except ProfileError as exc:
         raise SystemExit("profile error: {}".format(exc))
@@ -313,6 +320,9 @@ def main(argv=None):
     want_svg = args.format in ("both", "svg")
 
     if want_gcode:
+        if args.paper_anchor and not profile["bed"]:
+            log("warning: --paper-anchor needs a profile that declares a bed; the page's "
+                "bottom-left corner goes on X0 Y0")
         if args.profile is None:
             log("no --profile given, using built-in defaults: pen down Z{:g}, up Z{:g}. "
                 "Check these before running.".format(profile["pen_down_z"],
@@ -375,7 +385,7 @@ def main(argv=None):
             raise SystemExit("refusing to write G-code: {}".format(exc))
         log("wrote {}: {} strokes, {} points, {:.0f} mm drawn, ~{:.1f} min".format(
             target, stats["strokes"], stats["points"], stats["draw_mm"], stats["minutes"]))
-        placement = describe_shift(section, profile)
+        placement = describe_shift(section, page, profile)
         if placement:
             log("  before running it, " + placement)
         elif parts > 1:

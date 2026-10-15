@@ -9,7 +9,7 @@ moves are drawn in red, drawing moves in black.
 The paper and the bed are drawn as outlined rectangles behind the toolpath, so it is plain
 where the writing lands on the sheet and whether the sheet sits where the file expects. Both
 come from the header comments handwrite.py writes; for an older file without them, --profile
-supplies the bed and the paper's usual place.
+supplies the bed and, with the page size in the header, the paper's usual place.
 
     tools/gcode_preview.py output/letter.gcode -o preview.svg
 '''
@@ -140,13 +140,14 @@ def main(argv=None):
     draw, travel, zs = parse(args.gcode, args.pen_z)
     page, corner, bed = (None, None, None) if args.no_frame else parse_frame(args.gcode)
     if args.profile and not args.no_frame:
-        from handwriting_helper.gcode_out import ProfileError, load_profile
+        from handwriting_helper.gcode_out import ProfileError, load_profile, paper_corner
         try:
             profile = load_profile(args.profile)
         except ProfileError as exc:
             raise SystemExit("profile error: {}".format(exc))
         bed = bed or (tuple(profile["bed"]) if profile["bed"] else None)
-        corner = corner or tuple(profile["origin"])
+        if not corner and page:
+            corner = paper_corner(page[0], page[1], profile)
     paper = None
     if page and corner:
         paper = (corner[0], corner[1], corner[0] + page[0], corner[1] + page[1])

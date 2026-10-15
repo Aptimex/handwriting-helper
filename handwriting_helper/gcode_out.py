@@ -26,14 +26,20 @@ DEFAULTS = {
     "feed_draw": 1800.0,     # mm/min while drawing
     "feed_travel": 6000.0,   # mm/min while travelling
     "feed_z": 1200.0,        # mm/min for pen up/down moves
-    "origin": [0.0, 0.0],    # where the page's bottom-left corner sits on the bed
+    "paper_anchor": "top-left",  # which part of the bed the paper is laid against (ANCHORS)
     "bed": None,             # [x, y] machine limits; None disables the check
-    "flip_y": True,          # page y grows downward, machine y grows away from the origin
+    "flip_y": True,          # page y grows downward, machine y grows away from Y0
     "pen_dwell_ms": 0,       # pause after each pen up/down, for a pen that needs to settle
     "preamble": ["G21", "G90"],
     "postamble": [],
     "park": None,            # [x, y] to move to at the end
 }
+
+# Where the paper is laid on the bed, flush against that corner or edge of it, or centred.
+# "top" is the back of the bed (high Y), "bottom" the front (Y0), as you look at the machine.
+ANCHORS = ("top-left", "top-center", "top-right",
+           "center-left", "center", "center-right",
+           "bottom-left", "bottom-center", "bottom-right")
 
 _NUMERIC = ("pen_down_z", "pen_up_z", "safe_z", "feed_draw", "feed_travel", "feed_z",
             "pen_dwell_ms")
@@ -76,7 +82,10 @@ def load_profile(spec):
 
     for key in _NUMERIC:
         profile[key] = float(profile[key])
-    for key in ("origin", "bed", "park"):
+    if profile["paper_anchor"] not in ANCHORS:
+        raise ProfileError("{}: paper_anchor must be one of {} (got {!r})".format(
+            path, ", ".join(ANCHORS), profile["paper_anchor"]))
+    for key in ("bed", "park"):
         if profile[key] is not None:
             values = list(profile[key])
             if len(values) != 2:
@@ -89,18 +98,31 @@ def load_profile(spec):
 
 def reachable_area(profile):
     '''
-    The largest page the pen can reach, (width, height) in mm: the bed beyond the origin,
-    since the page's corner sits on the origin and the page extends from there.
+    The largest page the pen can reach, (width, height) in mm: the whole bed, since the paper
+    is laid flush against it.
     '''
     if not profile["bed"]:
         raise ProfileError("profile {!r} declares no bed, so there is nothing to fit the page "
                            "to".format(profile["name"]))
-    width = profile["bed"][0] - profile["origin"][0]
-    height = profile["bed"][1] - profile["origin"][1]
-    if width <= 0 or height <= 0:
-        raise ProfileError("profile {!r} puts the origin outside its bed".format(
-            profile["name"]))
-    return width, height
+    return tuple(profile["bed"])
+
+
+def paper_corner(width, height, profile):
+    '''
+    Where a sheet of `width` x `height` mm laid at the profile's paper_anchor has its corner
+    nearest X0 Y0, in machine coordinates. Without a bed there is nothing to lay it against,
+    so that corner is on X0 Y0.
+    '''
+    bed = profile["bed"]
+    if not bed:
+        return 0.0, 0.0
+    anchor = profile["paper_anchor"]
+    vertical, _, horizontal = anchor.partition("-")
+    if anchor == "center":
+        horizontal = "center"
+    x = {"left": 0.0, "center": (bed[0] - width) / 2.0, "right": bed[0] - width}[horizontal]
+    y = {"bottom": 0.0, "center": (bed[1] - height) / 2.0, "top": bed[1] - height}[vertical]
+    return x, y
 
 
 def _flatten_bezier(p0, c1, c2, p3, tolerance):
@@ -143,15 +165,14 @@ def to_machine(page, profile):
     Page millimetres -> machine millimetres.
 
     The page has its origin at the top-left with y growing downward; a printer bed has its
-    origin at the front-left with y growing away from it. With flip_y the page is placed so
-    its bottom-left corner lands on `origin`, which is what you get by laying the paper on the
-    bed the right way up.
+    origin at the front-left with y growing away from it. The paper is laid on the bed at the
+    profile's paper_anchor, and with flip_y the right way up: its top toward the back.
     '''
     return _place(page.strokes, page, profile)
 
 
 def _place(strokes, page, profile):
-    ox, oy = profile["origin"]
+    ox, oy = paper_corner(page.width_mm, page.height_mm, profile)
     if profile["flip_y"]:
         return [[(ox + x, oy + (page.height_mm - y)) for x, y in stroke]
                 for stroke in strokes]
@@ -162,8 +183,8 @@ class Section:
     '''
     One bed-sized band of a page, in machine coordinates.
 
-    shift_y is how far the paper has to be moved along Y from its usual place (the page
-    corner on the profile's origin) for this band to be in reach: negative is toward Y0.
+    shift_y is how far the paper has to be moved along Y from its usual place (laid at the
+    profile's paper_anchor) for this band to be in reach: negative is toward Y0.
     '''
 
     def __init__(self, strokes, shift_y=0.0):
@@ -245,15 +266,26 @@ def _group(ranges, start, stop, bed_y):
     return groups
 
 
-def describe_shift(section, profile):
+def describe_shift(section, page, profile):
     '''Paper placement instructions for a section, or None if the paper stays put.'''
     if not section.shift_y:
         return None
-    ox, oy = profile["origin"]
-    return ("slide the paper {:g} mm {} along Y, so the page corner that normally sits on the "
-            "origin is at X{:g} Y{:g}".format(
-                abs(section.shift_y), "toward Y0" if section.shift_y < 0 else "away from Y0",
-                ox, oy + section.shift_y))
+    _, oy = paper_corner(page.width_mm, page.height_mm, profile)
+    bottom = oy + section.shift_y
+    # Measure from the edge the paper is normally laid against, so the slide can be checked
+    # with a ruler at that edge of the bed.
+    if profile["paper_anchor"].startswith("bottom"):
+        edge, gap = "front", bottom
+    else:
+        edge, gap = "back", profile["bed"][1] - (bottom + page.height_mm)
+    if abs(gap) < 1e-6:
+        where = "flush with the {} of the bed".format(edge)
+    else:
+        where = "{:g} mm {} the {} of the bed".format(
+            abs(gap), "in from" if gap > 0 else "past", edge)
+    return ("slide the paper {:g} mm {} along Y without moving it sideways, so its {} edge is "
+            "{}".format(abs(section.shift_y),
+                        "toward Y0" if section.shift_y < 0 else "away from Y0", edge, where))
 
 
 def check_bed(strokes, profile):
@@ -269,8 +301,8 @@ def check_bed(strokes, profile):
         raise BedLimitError(
             "the drawing would run off the bed: it occupies X {:.1f}..{:.1f}, "
             "Y {:.1f}..{:.1f} mm but the bed is {:g} x {:g} mm. Use --page fit to size the "
-            "page to the bed, a smaller --page, a smaller --x-height-mm, or move the "
-            "profile's origin.".format(
+            "page to the bed, a smaller --page, a smaller --x-height-mm, or another "
+            "--paper-anchor.".format(
                 box[0], box[2], box[1], box[3], bed[0], bed[1]))
 
 
@@ -326,14 +358,16 @@ def write_gcode(page, path, profile, smooth=False, fit_error=1.0, simplify_tol=0
         for line in header_comment.splitlines():
             emit("; " + line)
     emit("; profile: {}".format(profile["name"]))
+    if profile["bed"]:
+        emit("; paper anchor: {}".format(profile["paper_anchor"]))
     emit("; page: {:g} x {:g} mm, x-height {:.2f} mm".format(
         page.width_mm, page.height_mm, page.x_height_mm))
-    placement = describe_shift(section, profile) if section is not None else None
+    placement = describe_shift(section, page, profile) if section is not None else None
     if placement:
         emit("; paper: " + placement)
     # Read back by tools/gcode_preview.py to draw the paper and the bed. The paper spans
     # this corner to corner + (width, height) in machine coordinates, whichever way Y runs.
-    ox, oy = profile["origin"]
+    ox, oy = paper_corner(page.width_mm, page.height_mm, profile)
     shift = section.shift_y if section is not None else 0.0
     emit("; paper corner: X{} Y{}".format(_fmt(ox), _fmt(oy + shift)))
     if profile["bed"]:

@@ -75,7 +75,8 @@ Run `./handwrite.py --help` for the full list. The main options:
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
 | `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
 | `--reflow` | Treat the input as pre-wrapped: join single line breaks and reflow each paragraph, so only blank lines separate paragraphs. By default every line break in the input is kept. |
-| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the area of the `--profile`'s bed the pen can reach, so any sheet that covers it works; margins are measured from the edges of that area. |
+| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the whole of the `--profile`'s bed, so any sheet that covers it works; margins are measured from the edges of the bed. |
+| `--paper-anchor` | Where the paper is laid on the bed: flush against a corner (`top-left`, the default, `top-right`, `bottom-left`, `bottom-right`), an edge (`top-center`, `center-left`, ...), or `center`. `top` is the back of the bed. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
@@ -110,17 +111,19 @@ tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 
 `tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header; for a file without a bed, pass `--profile` to draw one, and `--no-frame` hides them.
 
+The G-code assumes the paper is laid flush against the back-left corner of the bed, the right way up, with its top at the back. That is the easiest place to line a sheet up by hand. `--paper-anchor`, or `paper_anchor` in a profile, picks a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, from X0 Y0; if your plate's edges are not where the pen reaches X0 and its limits, line the paper up with the pen's reach instead.
+
 No profile ever emits heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
 
-`handwrite.py` refuses to write G-code that would run off the bed, if the profile declares one. Text that spans more of the page than the bed's Y travel — possible with A4 or Letter on a 220 or 256 mm bed — is cut between lines into as few lettered parts as fit, `-p1a`, `-p1b`, …. Text that fits in one go stays in one file, even if part of it starts out of reach. Where it costs no extra part, the lines already in reach with the paper in its usual place make up a part that needs no paper move; for each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres, for example:
+`handwrite.py` does its best to refuse to write G-code that would run off the bed, if the profile declares one. Text that spans more of the page than the bed's Y travel — possible with A4 or Letter on a 220 or 256 mm bed — is cut between lines into as few lettered parts as fit, `-p1a`, `-p1b`, etc. Text that fits in one go stays in one file, even if part of it starts out of reach. Where it costs no extra part, the lines already in reach with the paper in its usual place make up a part that needs no paper move. With the default anchor that is the top of the page. For each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres. The paper is never moved sideways, so it stays against the same side of the bed. The slide is measured from the edge of the bed the paper is normally laid against, for example:
 
 ```
-; paper: slide the paper 19 mm toward Y0 along Y, so the page corner that normally sits on the origin is at X18 Y-1
+; paper: slide the paper 25 mm away from Y0 along Y without moving it sideways, so its back edge is 25 mm past the back of the bed
 ```
 
-A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, or `--page fit`.
+A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, `--page fit`, or specify a custom HxW to achieve your desired outcome.
 
-`--page fit` sizes the page to the bed instead: the bed less the profile's origin, so 238 × 238 mm on `generic-256` and 200 × 200 mm on `ender3`. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, …, and nothing ever needs cutting. Lay any sheet that covers the area with its corner on the origin. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
+`--page fit` sizes the page to the bed instead: 256 × 256 mm on `generic-256` and 220 × 220 mm on `ender3`. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, ..., and nothing ever needs cutting. Lay any sheet that covers the bed with its corner in the anchor corner. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
 
 ## How it works
 

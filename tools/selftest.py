@@ -21,8 +21,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from handwriting_helper.gcode_out import (
-    BedLimitError, ProfileError, bed_sections, flatten, load_profile, reachable_area, to_machine,
-    write_gcode)
+    BedLimitError, ProfileError, bed_sections, describe_shift, flatten, load_profile,
+    paper_corner, reachable_area, to_machine, write_gcode)
 from handwriting_helper.generate import _word_ends
 from handwriting_helper.layout import (
     DEFAULT_LINE_PITCH_RATIO, LayoutError, Page, layout, parse_page)
@@ -191,8 +191,17 @@ def test_profiles():
     ender = load_profile("ender3")
     check("a profile is found by name", ender["name"] == "ender3")
     check("the bed is read", ender["bed"] == [220.0, 220.0], ender["bed"])
-    check("'fit' is the bed beyond the origin", reachable_area(ender) == (200.0, 200.0),
+    check("'fit' is the whole bed", reachable_area(ender) == (220.0, 220.0),
           reachable_area(ender))
+    check("the paper is laid top-left by default",
+          paper_corner(150.0, 100.0, ender) == (0.0, 120.0), paper_corner(150.0, 100.0, ender))
+    placed = {a: paper_corner(150.0, 100.0, dict(ender, paper_anchor=a))
+              for a in ("bottom-right", "center", "top-center")}
+    check("other anchors place the paper against their corner or centre",
+          placed == {"bottom-right": (70.0, 0.0), "center": (35.0, 60.0),
+                     "top-center": (35.0, 120.0)}, placed)
+    check("without a bed the paper's corner is X0 Y0",
+          paper_corner(150.0, 100.0, default) == (0.0, 0.0))
     _raises("'fit' needs a bed", ProfileError, reachable_area, default)
     _raises("an unknown profile is rejected", ProfileError, load_profile, "no-such-printer")
 
@@ -203,6 +212,9 @@ def test_profiles():
         typo = Path(tmp) / "typo.toml"
         typo.write_text('pen_downz = 5.0\n')
         _raises("an unknown setting is rejected", ProfileError, load_profile, str(typo))
+        anchor = Path(tmp) / "anchor.toml"
+        anchor.write_text('paper_anchor = "middle"\n')
+        _raises("an unknown paper anchor is rejected", ProfileError, load_profile, str(anchor))
 
 
 def test_output():
@@ -238,7 +250,7 @@ def test_output():
         page_top = min(p[1] for s in page.strokes for p in s)
         machine_of_top = max(p[1] for s in machine for p in s)
         check("the Y axis is flipped for the machine",
-              abs(machine_of_top - (profile["origin"][1] + page.height_mm - page_top)) < 1e-6)
+              abs(machine_of_top - (profile["bed"][1] - page_top)) < 1e-6)
 
         smoothed = Path(tmp) / "smooth.gcode"
         small = write_gcode(page, smoothed, profile, smooth=True, simplify_tol=0.05)
@@ -246,14 +258,16 @@ def test_output():
               small["points"] < stats["points"] * 0.75,
               "{} -> {}".format(stats["points"], small["points"]))
 
-        big, = layout(document, page="a4", margin_mm=20, x_height_mm=3.0, warn=False)
+        big, = layout(document, page="a3", margin_mm=20, x_height_mm=3.0, warn=False)
+        # Laid against the right of the bed, a page wider than it hangs off the left.
         _raises("a page that overruns the bed is refused", BedLimitError,
-                write_gcode, big, Path(tmp) / "big.gcode", profile)
+                write_gcode, big, Path(tmp) / "big.gcode",
+                dict(profile, paper_anchor="top-right"))
 
 
 def test_bed_sections():
     section("pages taller than the bed")
-    profile = load_profile("ender3")             # 220 x 220 bed, origin (10, 10)
+    profile = load_profile("ender3")             # 220 x 220 bed, paper laid top-left
     bed_y = profile["bed"][1]
 
     def page_of(height, baselines):
@@ -274,10 +288,14 @@ def test_bed_sections():
     check("shifts are whole millimetres", all(p.shift_y == int(p.shift_y) for p in parts))
     check("the part in reach as laid needs no shift",
           [p.shift_y == 0 for p in parts].count(True) == 1)
-    # A Letter page whose text fills only its top: the text is out of reach as laid, and
-    # straddles the edge of reach, but is far shorter than the bed. One slide covers it.
+    # A Letter page whose text fills only its top. Laid top-left it is all in reach as is.
     top_heavy = page_of(279.4, [float(y) for y in range(20, 120, 10)])
     top_parts = bed_sections(top_heavy, profile)
+    check("text at the top of a paper laid at the back needs no slide",
+          [p.shift_y for p in top_parts] == [0.0], [p.shift_y for p in top_parts])
+    # Laid bottom-left the same text is out of reach, and straddles the edge of reach, but is
+    # far shorter than the bed. One slide covers it.
+    top_parts = bed_sections(top_heavy, dict(profile, paper_anchor="bottom-left"))
     check("text shorter than the bed is one part, however it sits on the page",
           len(top_parts) == 1 and top_parts[0].shift_y != 0,
           [p.shift_y for p in top_parts])
@@ -289,16 +307,22 @@ def test_bed_sections():
 
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "part.gcode"
-        write_gcode(tall, target, profile, section=parts[0])
+        later = next(p for p in parts if p.shift_y)
+        write_gcode(tall, target, profile, section=later)
         check("a shifted part says where the paper goes",
               "; paper: slide the paper" in target.read_text())
+        # Paper top-left, the top band in reach: a later band slides the paper back by its
+        # shift, so the paper's top edge then hangs exactly that far past the back of the bed.
+        note = describe_shift(later, tall, profile)
+        check("the slide is measured from the edge the paper is laid against",
+              "{:g} mm past the back of the bed".format(later.shift_y) in note, note)
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from gcode_preview import parse_frame
         page_mm, corner, bed = parse_frame(target)
-        ox, oy = profile["origin"]
+        ox, oy = paper_corner(tall.width_mm, tall.height_mm, profile)
         check("the preview reads the paper and bed back from the header",
               page_mm == (tall.width_mm, tall.height_mm)
-              and corner == (ox, oy + parts[0].shift_y) and bed == tuple(profile["bed"]),
+              and corner == (ox, oy + later.shift_y) and bed == tuple(profile["bed"]),
               (page_mm, corner, bed))
 
 
