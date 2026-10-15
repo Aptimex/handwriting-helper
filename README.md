@@ -79,6 +79,7 @@ Run `./handwrite.py --help` for the full list. The main options:
 | `--paper-anchor` | Where the paper is laid on the bed: flush against a corner (`top-left`, the default, `top-right`, `bottom-left`, `bottom-right`), an edge (`top-center`, `center-left`, ...), or `center`. `top` is the back of the bed. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
+| `--bambu [PATH]` | Also wrap each G-code file in a `NAME.gcode.3mf` for Bambu Lab printers. Needs a template you make first, `template.gcode.3mf` unless PATH says otherwise; see [Bambu Lab printers](#bambu-lab-printers). |
 | `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
 | `--out-dir`, `--name`, `--format`, `--no-overwrite` | Where the files go, what they are called, whether to write `both` (default), `gcode` or `svg`, and whether to keep existing files. |
 
@@ -130,6 +131,20 @@ No profile ever emits heater, fan or extruder commands. If your machine needs th
 A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, `--page fit`, or specify a custom HxW to achieve your desired outcome.
 
 `--page fit` sizes the page to the bed instead: 256 × 256 mm on `generic-256` and 220 × 220 mm on `ender3`, less the pen offset, laid against the side of the bed the pen can reach. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, ..., and nothing ever needs cutting. Lay any sheet that covers the bed with its corner in the anchor corner. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
+
+## Bambu Lab printers
+
+Bambu Lab printers won't take a bare `.gcode` file. They take a `.gcode.3mf`, the zip that Bambu Studio writes when it slices, with the G-code inside at `Metadata/plate_1.gcode`. Bambu Studio and Handy also refuse to send a `.gcode.3mf` sliced for a different printer model, so no template is included: you make one for your own printer.
+
+**Before using `--bambu`, make the template once:**
+
+1. In Bambu Studio, select your printer and slice any small object. The settings don't matter.
+2. Export the sliced plate as a `.gcode.3mf` (File → Export → Export plate sliced file).
+3. Save it as `template.gcode.3mf` in the repo root, that file extensions is git-ignored.
+
+`--bambu` then writes a `NAME.gcode.3mf` output file alongside each G-code file. Use `--bambu PATH` to specify a different template file to use. It copies the template and swaps its internal `plate_1` G-code for the one being generated. Everything else in the template (the thumbnails, the slicer settings, the printer model) is copied over unchanged, so the printer and the app will incorrectly show the template's thumbnail, time estimate and filament use. Send the `.gcode.3mf` from Bambu Studio or Handy as usual. Any filament mapping it asks for doesn't matter, since nothing is extruded. **Remember to disable auto bed leveling unless your pen mount is compatible with that operation.**
+
+To wrap a G-code file manually, for example after editing it by hand, run `tools/bambu_wrap.py output/letter.gcode`. Use `--template` to specify a non-default `.gcode.3mf` template file location.
 
 ## How it works
 

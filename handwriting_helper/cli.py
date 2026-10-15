@@ -11,6 +11,7 @@ from .layout import (
 from .gcode_out import (
     ANCHORS, BedLimitError, ProfileError, bed_sections, describe_shift, load_profile,
     reachable_anchor, reachable_area, write_gcode)
+from .bambu import TEMPLATE as BAMBU_TEMPLATE, TemplateError, missing_template, wrap_gcode
 from .preview import write_preview
 from .svg_out import write_svg
 
@@ -98,6 +99,12 @@ completely locally.""")
                           "Each G-code file gets a NAME-preview.svg of its toolpath on the bed")
     out.add_argument("--no-preview", action="store_true",
                      help="don't render a NAME-preview.svg of each G-code file")
+    out.add_argument("--bambu", nargs="?", const=str(BAMBU_TEMPLATE), default=None,
+                     metavar="TEMPLATE",
+                     help="also wrap each G-code file in a NAME.gcode.3mf that a Bambu Lab "
+                          "printer will take, made from a .gcode.3mf you slice for your "
+                          "printer first (see the README). TEMPLATE defaults to {} in the "
+                          "repo root".format(BAMBU_TEMPLATE.name))
     out.add_argument("--no-overwrite", action="store_true",
                      help="if any output file already exists, write the set as 'NAME (1)', "
                           "'NAME (2)', ... instead of replacing it")
@@ -222,6 +229,15 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.bambu is not None:
+        # --bambu takes an optional value, so text right after it is read as the template.
+        if not args.bambu.lower().endswith(".3mf"):
+            parser.error("--bambu expects a .gcode.3mf template, got {!r}; put --bambu after "
+                         "the text, or give the template's path".format(args.bambu))
+        if args.format == "svg":
+            parser.error("--bambu wraps the G-code, so it needs --format gcode or both")
+        if not Path(args.bambu).is_file():
+            raise SystemExit("--bambu: " + missing_template(Path(args.bambu)))
     if args.strokes and (args.text or args.file):
         parser.error("--strokes replaces the text input; don't pass both")
     if not args.strokes and not args.text and not args.file:
@@ -359,6 +375,9 @@ def main(argv=None):
                 if not args.no_preview:
                     outputs.append(("preview", "-preview.svg", index, len(pages), part,
                                     len(sections), None))
+                if args.bambu is not None:
+                    outputs.append(("bambu", ".gcode.3mf", index, len(pages), part,
+                                    len(sections), None))
         if want_svg:
             outputs.append(("svg", ".svg", index, len(pages), 0, 1, None))
 
@@ -381,10 +400,17 @@ def main(argv=None):
             count = write_svg(page, target, **svg_options)
             log("wrote {} ({} paths)".format(target, count))
             continue
+        # Previews and Bambu files are made from the G-code file just written before them.
+        gcode = out_dir / (_output_stem(base, index, total, part, parts) + ".gcode")
         if kind == "preview":
-            # Rendered from the G-code file just written, so it shows what the machine gets.
-            gcode = out_dir / (_output_stem(base, index, total, part, parts) + ".gcode")
             write_preview(gcode, target)
+            log("wrote {}".format(target))
+            continue
+        if kind == "bambu":
+            try:
+                wrap_gcode(gcode, target, args.bambu)
+            except TemplateError as exc:
+                raise SystemExit("--bambu: {}".format(exc))
             log("wrote {}".format(target))
             continue
         page_header = header

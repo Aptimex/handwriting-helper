@@ -12,9 +12,12 @@ to run it in headless Chromium instead of numpy.
 '''
 
 import argparse
+import contextlib
+import io
 import math
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -372,6 +375,52 @@ def test_cli_outputs():
         check("--no-overwrite renames the preview with its G-code",
               (Path(tmp) / "t (1).gcode").exists()
               and (Path(tmp) / "t (1)-preview.svg").exists())
+        from handwriting_helper.bambu import GCODE_ENTRY
+        template = Path(tmp) / "mine.gcode.3mf"
+        with zipfile.ZipFile(template, "w") as z:
+            z.writestr(GCODE_ENTRY, "G28\n")
+        handwrite(common + ["--name", "b", "--format", "gcode", "--bambu", str(template)])
+        with zipfile.ZipFile(Path(tmp) / "b.gcode.3mf") as z:
+            check("--bambu TEMPLATE wraps the G-code in that template",
+                  z.read(GCODE_ENTRY) == (Path(tmp) / "b.gcode").read_bytes())
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                handwrite(["--bambu", "Hello world", "--out-dir", tmp])
+            stopped = False
+        except SystemExit:
+            stopped = True
+        check("text mistaken for a --bambu template is refused, not written",
+              stopped and not (Path(tmp) / "handwriting.gcode").exists())
+
+
+def test_bambu():
+    section("Bambu .gcode.3mf")
+    import hashlib
+    from handwriting_helper.bambu import GCODE_ENTRY, MD5_ENTRY, TemplateError, wrap_gcode
+    with tempfile.TemporaryDirectory() as tmp:
+        template = Path(tmp) / "template.gcode.3mf"
+        with zipfile.ZipFile(template, "w") as z:
+            z.writestr("3D/3dmodel.model", "<model/>")
+            z.writestr(GCODE_ENTRY, "; sliced by someone else\nG28\n")
+            z.writestr(MD5_ENTRY, "0" * 32)
+        gcode = Path(tmp) / "t.gcode"
+        gcode.write_text("G21\nG90\nG1 Z5\n")
+        target = Path(tmp) / "t.gcode.3mf"
+        wrap_gcode(gcode, target, template)
+        with zipfile.ZipFile(target) as z:
+            check("the G-code replaces the template's",
+                  z.read(GCODE_ENTRY) == gcode.read_bytes())
+            check("its checksum is updated", z.read(MD5_ENTRY).decode().lower()
+                  == hashlib.md5(gcode.read_bytes()).hexdigest())
+            check("everything else is kept", z.read("3D/3dmodel.model") == b"<model/>"
+                  and len(z.namelist()) == 3)
+        empty = Path(tmp) / "empty.zip"
+        with zipfile.ZipFile(empty, "w") as z:
+            z.writestr("readme.txt", "")
+        _raises("a template without plate G-code is rejected", TemplateError,
+                wrap_gcode, gcode, Path(tmp) / "x.gcode.3mf", empty)
+        _raises("a missing template is reported", TemplateError,
+                wrap_gcode, gcode, Path(tmp) / "x.gcode.3mf", Path(tmp) / "nope.gcode.3mf")
 
 
 def test_style_table():
@@ -464,6 +513,7 @@ def main(argv=None):
     test_output()
     test_bed_sections()
     test_cli_outputs()
+    test_bambu()
     test_style_table()
     if args.online:
         test_online(args)
