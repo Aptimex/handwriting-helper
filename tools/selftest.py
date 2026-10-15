@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from handwriting_helper.gcode_out import (
     BedLimitError, ProfileError, bed_sections, describe_shift, flatten, load_profile,
-    paper_corner, reachable_area, to_machine, write_gcode)
+    paper_corner, reachable_anchor, reachable_area, to_machine, write_gcode)
 from handwriting_helper.generate import _word_ends
 from handwriting_helper.layout import (
     DEFAULT_LINE_PITCH_RATIO, LayoutError, Page, layout, parse_page)
@@ -202,6 +202,16 @@ def test_profiles():
                      "top-center": (35.0, 120.0)}, placed)
     check("without a bed the paper's corner is X0 Y0",
           paper_corner(150.0, 100.0, default) == (0.0, 0.0))
+    check("the pen is not offset by default",
+          (ender["pen_offset_x"], ender["pen_offset_y"]) == (0.0, 0.0))
+    offset = dict(ender, pen_offset_x=-30.0, pen_offset_y=12.0)
+    check("'fit' leaves out what an offset pen cannot reach",
+          reachable_area(offset) == (190.0, 208.0), reachable_area(offset))
+    check("'fit' is laid on the side of the bed an offset pen can reach",
+          reachable_anchor(dict(offset, paper_anchor="bottom-right")) == "top-left"
+          and reachable_anchor(dict(ender, pen_offset_x=5.0)) == "top-right"
+          and reachable_anchor(dict(ender, paper_anchor="center")) == "center",
+          reachable_anchor(offset))
     _raises("'fit' needs a bed", ProfileError, reachable_area, default)
     _raises("an unknown profile is rejected", ProfileError, load_profile, "no-such-printer")
 
@@ -251,6 +261,11 @@ def test_output():
         machine_of_top = max(p[1] for s in machine for p in s)
         check("the Y axis is flipped for the machine",
               abs(machine_of_top - (profile["bed"][1] - page_top)) < 1e-6)
+
+        shifted = to_machine(page, dict(profile, pen_offset_x=-30.0, pen_offset_y=12.0))
+        check("the nozzle moves opposite the pen's offset", all(
+            abs(a[0] - (b[0] + 30.0)) < 1e-9 and abs(a[1] - (b[1] - 12.0)) < 1e-9
+            for s, t in zip(shifted, machine) for a, b in zip(s, t)))
 
         smoothed = Path(tmp) / "smooth.gcode"
         small = write_gcode(page, smoothed, profile, smooth=True, simplify_tol=0.05)
@@ -318,12 +333,22 @@ def test_bed_sections():
               "{:g} mm past the back of the bed".format(later.shift_y) in note, note)
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from gcode_preview import parse_frame
-        page_mm, corner, bed = parse_frame(target)
+        page_mm, corner, bed, _ = parse_frame(target)
         ox, oy = paper_corner(tall.width_mm, tall.height_mm, profile)
         check("the preview reads the paper and bed back from the header",
               page_mm == (tall.width_mm, tall.height_mm)
               and corner == (ox, oy + later.shift_y) and bed == tuple(profile["bed"]),
               (page_mm, corner, bed))
+
+        # The preview adds the pen offset back, so the ink lands where it did without one.
+        from gcode_preview import parse
+        offset = dict(profile, pen_offset_x=-30.0, pen_offset_y=12.0)
+        plain, moved = Path(tmp) / "plain.gcode", Path(tmp) / "offset.gcode"
+        write_gcode(short, plain, profile)
+        write_gcode(short, moved, offset)
+        a, b = parse(plain)[0], parse(moved, offset=parse_frame(moved)[3])[0]
+        check("the preview shows the pen, not the nozzle", len(a) == len(b) and all(
+            math.dist(p, q) < 1e-3 for s, t in zip(a, b) for p, q in zip(s, t)))
 
 
 def test_style_table():

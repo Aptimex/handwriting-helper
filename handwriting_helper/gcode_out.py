@@ -29,6 +29,8 @@ DEFAULTS = {
     "paper_anchor": "top-left",  # which part of the bed the paper is laid against (ANCHORS)
     "bed": None,             # [x, y] machine limits; None disables the check
     "flip_y": True,          # page y grows downward, machine y grows away from Y0
+    "pen_offset_x": 0.0,     # where the pen tip is relative to the nozzle, in mm: + is toward
+    "pen_offset_y": 0.0,     # X max (right) and Y max (the back of the bed)
     "pen_dwell_ms": 0,       # pause after each pen up/down, for a pen that needs to settle
     "preamble": ["G21", "G90"],
     "postamble": [],
@@ -42,7 +44,7 @@ ANCHORS = ("top-left", "top-center", "top-right",
            "bottom-left", "bottom-center", "bottom-right")
 
 _NUMERIC = ("pen_down_z", "pen_up_z", "safe_z", "feed_draw", "feed_travel", "feed_z",
-            "pen_dwell_ms")
+            "pen_dwell_ms", "pen_offset_x", "pen_offset_y")
 
 
 class ProfileError(ValueError):
@@ -98,13 +100,43 @@ def load_profile(spec):
 
 def reachable_area(profile):
     '''
-    The largest page the pen can reach, (width, height) in mm: the whole bed, since the paper
-    is laid flush against it.
+    The largest page the pen can reach, (width, height) in mm: the whole bed, less the strip
+    along each side that a pen mounted off the nozzle cannot get to.
     '''
     if not profile["bed"]:
         raise ProfileError("profile {!r} declares no bed, so there is nothing to fit the page "
                            "to".format(profile["name"]))
-    return tuple(profile["bed"])
+    width = profile["bed"][0] - abs(profile["pen_offset_x"])
+    height = profile["bed"][1] - abs(profile["pen_offset_y"])
+    if width <= 0 or height <= 0:
+        raise ProfileError("profile {!r} offsets the pen further than its bed is wide".format(
+            profile["name"]))
+    return width, height
+
+
+def reachable_anchor(profile):
+    '''
+    The paper_anchor that lays a reachable_area() page over the part of the bed the pen can
+    reach. That part touches the bed's edges on the side the pen is offset toward, so the
+    anchor moves to that side; along an axis with no offset it is left as the profile has it.
+    '''
+    vertical, horizontal = _split_anchor(profile["paper_anchor"])
+    dx, dy = profile["pen_offset_x"], profile["pen_offset_y"]
+    if dx:
+        horizontal = "right" if dx > 0 else "left"
+    if dy:
+        vertical = "top" if dy > 0 else "bottom"
+    if vertical == horizontal == "center":
+        return "center"
+    return "{}-{}".format(vertical, horizontal)
+
+
+def _split_anchor(anchor):
+    '''"top-left" -> ("top", "left"); "center" -> ("center", "center").'''
+    if anchor == "center":
+        return "center", "center"
+    vertical, _, horizontal = anchor.partition("-")
+    return vertical, horizontal
 
 
 def paper_corner(width, height, profile):
@@ -116,10 +148,7 @@ def paper_corner(width, height, profile):
     bed = profile["bed"]
     if not bed:
         return 0.0, 0.0
-    anchor = profile["paper_anchor"]
-    vertical, _, horizontal = anchor.partition("-")
-    if anchor == "center":
-        horizontal = "center"
+    vertical, horizontal = _split_anchor(profile["paper_anchor"])
     x = {"left": 0.0, "center": (bed[0] - width) / 2.0, "right": bed[0] - width}[horizontal]
     y = {"bottom": 0.0, "center": (bed[1] - height) / 2.0, "top": bed[1] - height}[vertical]
     return x, y
@@ -167,12 +196,17 @@ def to_machine(page, profile):
     The page has its origin at the top-left with y growing downward; a printer bed has its
     origin at the front-left with y growing away from it. The paper is laid on the bed at the
     profile's paper_anchor, and with flip_y the right way up: its top toward the back.
+
+    Machine coordinates are where the nozzle goes, so a pen mounted off the nozzle is reached
+    by moving the nozzle the other way by the pen's offset.
     '''
     return _place(page.strokes, page, profile)
 
 
 def _place(strokes, page, profile):
     ox, oy = paper_corner(page.width_mm, page.height_mm, profile)
+    ox -= profile["pen_offset_x"]
+    oy -= profile["pen_offset_y"]
     if profile["flip_y"]:
         return [[(ox + x, oy + (page.height_mm - y)) for x, y in stroke]
                 for stroke in strokes]
@@ -181,7 +215,7 @@ def _place(strokes, page, profile):
 
 class Section:
     '''
-    One bed-sized band of a page, in machine coordinates.
+    One bed-sized band of a page, in machine (nozzle) coordinates.
 
     shift_y is how far the paper has to be moved along Y from its usual place (laid at the
     profile's paper_anchor) for this band to be in reach: negative is toward Y0.
@@ -298,12 +332,17 @@ def check_bed(strokes, profile):
         return
     box = (min(xs), min(ys), max(xs), max(ys))
     if box[0] < 0 or box[1] < 0 or box[2] > bed[0] or box[3] > bed[1]:
+        offset = ""
+        if profile["pen_offset_x"] or profile["pen_offset_y"]:
+            offset = (" The pen is offset X{:g} Y{:g} from the nozzle, so it cannot reach as far "
+                      "along the opposite sides of the bed.".format(
+                          profile["pen_offset_x"], profile["pen_offset_y"]))
         raise BedLimitError(
-            "the drawing would run off the bed: it occupies X {:.1f}..{:.1f}, "
-            "Y {:.1f}..{:.1f} mm but the bed is {:g} x {:g} mm. Use --page fit to size the "
-            "page to the bed, a smaller --page, a smaller --x-height-mm, or another "
-            "--paper-anchor.".format(
-                box[0], box[2], box[1], box[3], bed[0], bed[1]))
+            "the drawing would run off the bed: the nozzle would have to cover X "
+            "{:.1f}..{:.1f}, Y {:.1f}..{:.1f} mm but the bed is {:g} x {:g} mm.{} Use --page "
+            "fit to size the page to the bed, a smaller --page, a smaller --x-height-mm, or "
+            "another --paper-anchor.".format(
+                box[0], box[2], box[1], box[3], bed[0], bed[1], offset))
 
 
 def _fmt(v):
@@ -370,6 +409,9 @@ def write_gcode(page, path, profile, smooth=False, fit_error=1.0, simplify_tol=0
     ox, oy = paper_corner(page.width_mm, page.height_mm, profile)
     shift = section.shift_y if section is not None else 0.0
     emit("; paper corner: X{} Y{}".format(_fmt(ox), _fmt(oy + shift)))
+    # The moves are the nozzle's; the preview adds this back to show where the ink lands.
+    emit("; pen offset: X{} Y{}".format(
+        _fmt(profile["pen_offset_x"]), _fmt(profile["pen_offset_y"])))
     if profile["bed"]:
         emit("; bed: {} x {} mm".format(_fmt(profile["bed"][0]), _fmt(profile["bed"][1])))
     emit("; strokes: {}, points: {}".format(

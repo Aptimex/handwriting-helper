@@ -8,7 +8,8 @@ moves are drawn in red, drawing moves in black.
 
 The paper and the bed are drawn as outlined rectangles behind the toolpath, so it is plain
 where the writing lands on the sheet and whether the sheet sits where the file expects. Both
-come from the header comments handwrite.py writes; for an older file without them, --profile
+come from the header comments handwrite.py writes, as does the pen's offset from the nozzle,
+which is added to every move so the toolpath shows where the pen goes rather than the nozzle; for an older file without them, --profile
 supplies the bed and, with the page size in the header, the paper's usual place.
 
     tools/gcode_preview.py output/letter.gcode -o preview.svg
@@ -27,14 +28,18 @@ NUM = r"(-?\d+(?:\.\d+)?)"
 PAGE = re.compile(r"^;\s*page:\s*{0}\s*x\s*{0}\s*mm".format(NUM))
 CORNER = re.compile(r"^;\s*paper corner:\s*X{0}\s+Y{0}".format(NUM))
 BED = re.compile(r"^;\s*bed:\s*{0}\s*x\s*{0}\s*mm".format(NUM))
+OFFSET = re.compile(r"^;\s*pen offset:\s*X{0}\s+Y{0}".format(NUM))
 
 BED_FILL, BED_EDGE = "#e3ecf6", "#3b6ea5"
 PAPER_FILL, PAPER_EDGE = "#fffdf2", "#c98a00"
 
 
-def parse(path, pen_threshold=None):
+def parse(path, pen_threshold=None, offset=(0.0, 0.0)):
     '''
     Returns (draw_strokes, travel_segments, z_values).
+
+    The moves are the nozzle's; `offset`, the pen's position relative to it, is added so the
+    result shows where the pen goes.
 
     A move counts as drawing when Z is at or below the threshold, which defaults to halfway
     between the two lowest Z values in the file. Note this is deliberately not the midpoint of
@@ -56,7 +61,7 @@ def parse(path, pen_threshold=None):
         y = words.get("Y", y)
         z = words.get("Z", z)
         zs.add(z)
-        moves.append((x, y, z))
+        moves.append((x + offset[0], y + offset[1], z))
 
     if not moves:
         raise SystemExit("no G0/G1 moves found in {}".format(path))
@@ -88,16 +93,18 @@ def parse(path, pen_threshold=None):
 
 def parse_frame(path):
     '''
-    The paper and bed recorded in the file's header: (page (w, h) or None, paper corner
-    (x, y) or None, bed (w, h) or None).
+    The paper, bed and pen offset recorded in the file's header: (page (w, h) or None, paper
+    corner (x, y) or None, bed (w, h) or None, pen offset (x, y)).
     '''
     page = corner = bed = None
+    offset = (0.0, 0.0)
     for raw in Path(path).read_text().splitlines():
         if not raw.startswith(";"):
             if raw.strip():
                 break                       # the header is over at the first command
             continue
-        for pattern, kind in ((PAGE, "page"), (CORNER, "corner"), (BED, "bed")):
+        for pattern, kind in ((PAGE, "page"), (CORNER, "corner"), (BED, "bed"),
+                              (OFFSET, "offset")):
             m = pattern.match(raw)
             if m:
                 value = (float(m.group(1)), float(m.group(2)))
@@ -105,9 +112,11 @@ def parse_frame(path):
                     page = value
                 elif kind == "corner":
                     corner = value
-                else:
+                elif kind == "bed":
                     bed = value
-    return page, corner, bed
+                else:
+                    offset = value
+    return page, corner, bed, offset
 
 
 def _rect(x0, y0, x1, y1, tx, **attrs):
@@ -137,8 +146,10 @@ def main(argv=None):
                          "the file's header does not record them")
     args = ap.parse_args(argv)
 
-    draw, travel, zs = parse(args.gcode, args.pen_z)
-    page, corner, bed = (None, None, None) if args.no_frame else parse_frame(args.gcode)
+    page, corner, bed, offset = parse_frame(args.gcode)
+    draw, travel, zs = parse(args.gcode, args.pen_z, offset)
+    if args.no_frame:
+        page = corner = bed = None
     if args.profile and not args.no_frame:
         from handwriting_helper.gcode_out import ProfileError, load_profile, paper_corner
         try:

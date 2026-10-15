@@ -75,7 +75,7 @@ Run `./handwrite.py --help` for the full list. The main options:
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
 | `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
 | `--reflow` | Treat the input as pre-wrapped: join single line breaks and reflow each paragraph, so only blank lines separate paragraphs. By default every line break in the input is kept. |
-| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the whole of the `--profile`'s bed, so any sheet that covers it works; margins are measured from the edges of the bed. |
+| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the part of the `--profile`'s bed the pen can reach, so any sheet that covers the bed works; margins are measured from the edges of that area. |
 | `--paper-anchor` | Where the paper is laid on the bed: flush against a corner (`top-left`, the default, `top-right`, `bottom-left`, `bottom-right`), an edge (`top-center`, `center-left`, ...), or `center`. `top` is the back of the bed. |
 | `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
@@ -111,7 +111,11 @@ tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 
 `tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header; for a file without a bed, pass `--profile` to draw one, and `--no-frame` hides them.
 
-The G-code assumes the paper is laid flush against the back-left corner of the bed, the right way up, with its top at the back. That is the easiest place to line a sheet up by hand. `--paper-anchor`, or `paper_anchor` in a profile, picks a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, from X0 Y0; if your plate's edges are not where the pen reaches X0 and its limits, line the paper up with the pen's reach instead.
+The G-code assumes the paper is laid flush against the back-left corner of the bed, the right way up, with its top at the back. That is the easiest place to line a sheet up by hand. `--paper-anchor`, or `paper_anchor` in a profile, picks a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, from X0 Y0; if your plate's edges are not where the nozzle reaches X0 and its limits, line the paper up with the nozzle's reach instead.
+
+Pens are usually mounted beside the nozzle rather than in its place. Set `pen_offset_x` and `pen_offset_y` in the profile to the pen tip's position relative to the nozzle, in mm (+X to the right, +Y toward the back). The G-code always controls the nozzle position, so the generator applies these offsets to moves so that the pen lands where the page needs it. An easy way to measure this offset is to mount the pen and press it into the paper, then move the printhead and bed until the nozzle touches the start of the pen line. Then measure the X and Y difference between the start and end of the line. 
+
+The nozzle still has to stay on the bed, so the pen cannot reach a strip as wide as the offset along the opposite side of the bed. Note that the G-code preview adds the offset back, so it shows where the pen (not the nozzle) goes relative to the bed. 
 
 No profile ever emits heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
 
@@ -123,7 +127,7 @@ No profile ever emits heater, fan or extruder commands. If your machine needs th
 
 A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, `--page fit`, or specify a custom HxW to achieve your desired outcome.
 
-`--page fit` sizes the page to the bed instead: 256 × 256 mm on `generic-256` and 220 × 220 mm on `ender3`. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, ..., and nothing ever needs cutting. Lay any sheet that covers the bed with its corner in the anchor corner. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
+`--page fit` sizes the page to the bed instead: 256 × 256 mm on `generic-256` and 220 × 220 mm on `ender3`, less the pen offset, laid against the side of the bed the pen can reach. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, ..., and nothing ever needs cutting. Lay any sheet that covers the bed with its corner in the anchor corner. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
 
 ## How it works
 

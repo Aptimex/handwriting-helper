@@ -10,7 +10,7 @@ from .layout import (
     DEFAULT_LINE_PITCH_RATIO, LayoutError, layout, parse_page, resolve_scale, text_width_mm)
 from .gcode_out import (
     ANCHORS, BedLimitError, ProfileError, bed_sections, describe_shift, load_profile,
-    reachable_area, write_gcode)
+    reachable_anchor, reachable_area, write_gcode)
 from .svg_out import write_svg
 
 # Base name for the output files when the text was not read from a file.
@@ -153,9 +153,12 @@ def _resolve_page(args, profile):
         raise SystemExit("--page fit sizes the page to the printer's bed, so it needs a "
                          "--profile that declares one")
     try:
-        return reachable_area(profile)
+        area = reachable_area(profile)
     except ProfileError as exc:
         raise SystemExit("profile error: {}".format(exc))
+    # A pen off the nozzle can't reach one side of the bed, so the page goes on the other.
+    profile["paper_anchor"] = reachable_anchor(profile)
+    return area
 
 
 def _line_width_units(args, page, wrap, x_height_units, advance_units):
@@ -253,8 +256,8 @@ def main(argv=None):
     except LayoutError as exc:
         raise SystemExit("layout failed: {}".format(exc))
     if str(args.page).strip().lower() == "fit":
-        log("page fit: {:g} x {:g} mm, the part of {}'s bed the pen can reach".format(
-            page[0], page[1], profile["name"]))
+        log("page fit: {:g} x {:g} mm, the part of {}'s bed the pen can reach, laid "
+            "{}".format(page[0], page[1], profile["name"], profile["paper_anchor"]))
 
     # --- strokes -------------------------------------------------------------------
     if args.strokes:
