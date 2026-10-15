@@ -1,9 +1,9 @@
 [project]
 name = "handwriting-helper"
-version = "0.3.0"
+version = "0.0.0"
 description = "Turn text into plotter G-code that mimics human handwriting"
 requires-python = ">=3.11"
-license = { text = "GPL-3.0-or-later" }
+license = { text = "AGPL-3.0-or-later" }
 dependencies = [
     "numpy>=1.24",
 ]

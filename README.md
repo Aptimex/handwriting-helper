@@ -1,87 +1,116 @@
 # handwriting-helper
 
-Turn text into G-code that a 3D printer can plot in a way that mimics the strokes of human handwriting.
+Turn text into G-code that a 3D printer can plot in a way that mimics the strokes of human handwriting. Dynamically reflows text to fit arbitrary combinations of paper and bed sizes.
 
 ```bash
-./handwrite.py --file letter.txt --profile generic-256    # -> output/letter.gcode and output/letter.svg
+./handwrite.py --file letter.txt --profile generic-256
 ```
 
 ![example output](docs/example.svg)
 
-The handwriting comes from [calligrapher.ai](https://www.calligrapher.ai/), a recurrent neural net trained on the IAM On-Line Handwriting Database. A complete offline copy lives in `website/`, and this tool runs its network with a numpy port of the page's JavaScript, so everything runs locally.
+The handwriting comes from the model used by [calligrapher.ai](https://www.calligrapher.ai/), a recurrent neural net trained on the IAM On-Line Handwriting Database. A complete offline copy lives in `website/`, and this tool runs its model network with a numpy port of the page's JavaScript, so everything runs locally.
 
 > [!WARNING]
-> This program outputs raw G-code. If you pick the wrong settings, this G-code may cause the printer to attempt movement outside its physical limits, causing damage. Use at your own risk.
+> This program outputs raw G-code. If you pick the wrong settings, this G-code may cause your printer to attempt movement outside its physical limits, causing damage. Use at your own risk.
 
-## Why this exists
-
-Plenty of programs turn an SVG into G-code, but not usefully for handwriting:
-
-- calligrapher.ai's own SVG export outlines and fills each stroke, so the G-code traces around the edges of the letters instead of writing them.
-- The [original model repo](https://github.com/sjvasquez/handwriting-synthesis) does emit stroke lines, but it is old enough to be difficult to run, and so are its forks.
-- The site's JavaScript is obfuscated, so the stroke data it generates internally is not exposed through any UI.
-
-So this reaches into the page for the raw stroke points, and keeps the explicit pen-up / pen-down information all the way through to the G-code. Nothing has to infer where a pen lift belongs, because it was never thrown away.
+> [!CAUTION]
+> **Home your printer yourself before running any G-code.** The G-code files use absolute machine coordinates which only work if the printer knows the current X, Y and Z coordinates. Failure to home first has different consequences depending on your printer/firmware, but in some cases will absolutely crash the toolhead into the frame and grind motor gears. You can add `G28` (or `G28 X Y`) to a profile's preamble to auto-home at the start if you know your pen mount won't interfere with the homing process.
 
 ## Install
 
-```
+```bash
 git clone --recurse-submodules https://github.com/Aptimex/handwriting-helper
 cd handwriting-helper
 
 pip install -r requirements.txt
 ```
 
-The original site can still be used as the "backend" instead of the numpy port, with `--backend browser`, but it needs Playwright and a headless Chromium (`pip install playwright && playwright install chromium`, about 120 MB). Both backends produce effectively identical output, and the numpy one runs faster.
-
 Requires python 3.11 or newer. If you already cloned without `--recurse-submodules`, run `git submodule update --init` (the `fitCurves` submodule is needed for `--smooth`).
+
+The original website can still be used as the "backend" instead of the numpy port, with `--backend browser`, but it needs Playwright and a headless Chromium (`pip install playwright && playwright install chromium`, about 120 MB). Both backends produce effectively identical output, and the numpy one runs faster.
 
 ## Use
 
-```
-# a single line -> output/hello.gcode and output/hello.svg
+Before generating any files you'll need to setup a config file for your printer/plotter. See the [Printer profiles](#printer-profiles) section. 
+
+All output files will be saved to the `output` folder (relative to cwd). By default this will generally include an SVG file with the stroke data, a G-code file generated from that SVG, and a preview SVG file showing the expected relative placement of bed, paper, and pen strokes in the G-code file. File names are derived from the input filename, and output files overwrite existing files by default. 
+
+```bash
+# a single text line input
 ./handwrite.py "Hello world" --name hello --profile ender3
 
-# a whole text file on A5 paper, split into as many pages as needed -> output/letter.*
+# a whole text file on A5 paper, split into as many pages as needed
 ./handwrite.py --file letter.txt --profile ender3 --page a5
 
-# the same, but assuming the paper fills the entire bed
+# the same, but assuming the selected paper fills the entire bed
 ./handwrite.py --file letter.txt --profile ender3 --page fit
 
-# only the SVG, if you'd rather keep your own G-code workflow, into another folder
+# only the SVG, if you'd rather keep your own G-code workflow, saved into another folder
 ./handwrite.py --file letter.txt --format svg --out-dir ~/plots
 ```
 
-Every run writes a G-code file, an SVG of the same page, and a preview of the G-code's toolpath (`NAME-preview.svg`, see [Printer profiles](#printer-profiles)) into `--out-dir` (default `output/` in the current directory, created if needed). They are named after the input file without its extension, or `--name`, or `handwriting` for text given on the command line. Existing files are overwritten; with `--no-overwrite` the whole set is written as `letter (1).gcode`, `letter (1).svg`, ... instead. `--no-preview` skips the previews.
+Input text that runs longer than one physical page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A physical page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ..., each with its own `letter-p1a-preview.svg`, so you can manually shift the paper and fill an entire physical page. Only G-code files are cut this way, not SVGs. Such cut G-code files will have a comment line near the top describing how to shift the paper to get the correct alignment. There is no support for splitting pages that are horizontally too wide, text just won't write past the bed width.
 
-A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ..., each with its own `letter-p1a-preview.svg`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVGs are never cut.
-
-Generating strokes is the slow, random part. You can save the raw strokes output and re-render them them later into SVG or G-code, with a different profile, smoothing, simplification, etc:
-
-```
-./handwrite.py --file letter.txt --save-strokes output/letter.strokes.json
-./handwrite.py --strokes output/letter.strokes.json --smooth --name letter-smooth
-```
-
-However, line breaks are chosen during the stroke generation step against the page width at the requested size. So re-laying saved strokes onto a narrower page or at a larger `--x-height-mm` won't re-break them; you get a warning if they overrun the margins, and should generate again instead.
-
-Run `./handwrite.py --help` for the full list. The main options:
+Run `./handwrite.py --help` for the full list of options. The main ones:
 
 | Option | What it does |
 |---|---|
-| `--style N` | One of 80 handwriting styles (the website exposes only 9). `random` picks one and prints it. |
+| `--style N` | One of 80 handwriting styles (the website exposes only 9). `random` is the default and the selection will be printed. |
 | `--bias F` | Legibility, 0.15 (loose and scrawly) to 2.5 (neat). |
-| `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. Without one, a seed is chosen and printed, so a run you like can be repeated. |
+| `--seed N` | Makes the output reproducible — the same seed gives byte-identical strokes. Default is random and the selection will be printed. |
 | `--x-height-mm` | Physical size, measured on letters like `n`. 3 mm is normal handwriting. |
-| `--wrap N` \| `fit` | Line length. `fit` (the default) fills the width between the margins; a number asks for lines of about N characters. |
+| `--wrap N` \| `fit` | Line length. `fit` (the default) fills the page width between the margins; a number asks for lines of about N characters. |
 | `--reflow` | Treat the input as pre-wrapped: join single line breaks and reflow each paragraph, so only blank lines separate paragraphs. By default every line break in the input is kept. |
-| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` makes the page the part of the `--profile`'s bed the pen can reach, so any sheet that covers the bed works; margins are measured from the edges of that area. |
+| `--page`, `--margin`, `--align`, `--line-pitch` | Page layout; Letter with 10 mm margins by default. `--page fit` uses the dimensions of the bed from the `--profile`, so any sheet that covers the bed works. |
 | `--paper-anchor` | Where the paper is laid on the bed: flush against a corner (`top-left`, the default, `top-right`, `bottom-left`, `bottom-right`), an edge (`top-center`, `center-left`, ...), or `center`. `top` is the back of the bed. |
-| `--smooth` | Fits cubic beziers to the strokes. Looks better at large sizes. |
+| `--smooth` | Fits cubic beziers to the strokes. At large sizes, this makes text look much smoother and more natural. |
 | `--simplify-tol 0.05` | Drops redundant points. Roughly halves the file for no visible change. |
-| `--bambu [PATH]` | Also wrap each G-code file in a `NAME.gcode.3mf` for Bambu Lab printers. Needs a template you make first, `template.gcode.3mf` unless PATH says otherwise; see [Bambu Lab printers](#bambu-lab-printers). |
-| `--dry-run-z 5` | Raises both pen heights, so you can watch the motion without touching paper. |
+| `--bambu [PATH]` | Also wrap each G-code file in a `NAME.gcode.3mf` file that can be easily sent to Bambu Lab printers. Requires you to create a template file first, see the [Bambu Lab printers](#bambu-lab-printers) section. |
+| `--dry-run-z 5` | Raises both pen heights in the G-code so you can preview the motion without touching paper. |
 | `--out-dir`, `--name`, `--format`, `--no-overwrite` | Where the files go, what they are called, whether to write `both` (default), `gcode` or `svg`, and whether to keep existing files. |
+
+## Printer profiles
+
+G-code is generated from a printer profile. Two examples are included, both commented: `profiles/ender3.toml` for a 220 × 220 mm bed, and `profiles/generic-256.toml` for the 256 × 256 mm beds many modern printers use. Copy one and edit it. `--profile` takes either a name from `profiles/` or a path to a `.toml` file. 
+
+The first numbers you will need to customize are `pen_down_z` and `pen_up_z`. Set these values so that your pen will easily mark the paper at the `pen_down_z` height and will be off the paper at the `pen_up_z` height. If you have an adjustable pen holder, here's how I recommend setting these: home the machine and raise the nozzle to exactly 5mm above the bed. Adjust your pen so it's touching the paper and secure it in place there. Then set `pen_down_z = 1.0` and `pen_up_z = 6.0`. You may need to adjust these values if your spring doesn't easily allow 4mm of travel. 
+
+Next, set `pen_offset_x` and `pen_offset_y` in the profile to the pen tip's position relative to the nozzle, in mm (+X if the pen is located to the right of the nozzle, +Y if it's behind it). The G-code always controls the nozzle position, so the generator applies these offsets to moves so that the pen lands on the right spot on the page. An easy way to measure these offsets is to mount the pen and press it into the paper, then move the printhead/bed until the nozzle is directly above touches the start of the pen line. Then remove the paper and measure the X and Y distances between the start and end of the line. 
+
+The `O` is the nozzle:
+```
+     +Y
+
+  -X  O  +X
+
+     -Y
+```
+
+The nozzle still has to stay above the bed area while plotting, so the pen cannot reach a strip as wide as the offset along the opposite side of the bed (even if it technically could on your printer, the generator intentionally bounds the nozzle to the bed). Note that the G-code preview adds the offset back, so it shows where the pen (not the nozzle) will move relative to the bed.
+
+Every generated G-code file comes with a `NAME-preview.svg`, rendered directly from the G-code file itself. It shows the G-code's moves (drawing moves in black, travel moves in red) over the bed (blue) and the paper (dashed amber) where the G-code expects it to be placed, so you can see where the writing lands on the sheet and how the sheet should sit on the bed. Both rectangles are drawn based on info saved into the G-code's header, not the G-code itself. To render a preview of a G-code file on its own, for example after editing it by hand, run `tools/gcode_preview.py output/test.gcode`. It takes `--profile` to draw the bed for a file without one, and `--no-frame` to hide both rectangles.
+
+By default the G-code generator assumes the paper is laid flush against the back-left corner of the bed. `--paper-anchor`, or `paper_anchor` in a profile, specifies a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, starting from X0 Y0; if your nozzle can't actually reach the bed edge, line the paper up with the nozzle's reach instead.
+
+The generator never adds heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
+
+`handwrite.py` does its best to refuse to write G-code that would cause the nozzle to run off the bed, if the profile defines one. There is no support for exclusion zones within the bed size. 
+
+## Bambu Lab printers
+
+Bambu Studio won't send a bare `.gcode` file to printers, it will only send `.gcode.3mf` files that match the format it generates. These are really just ZIP files that store the G-code inside at `Metadata/plate_1.gcode`. Since the slicer will also refuse to send a `.gcode.3mf` that contains metadata for a different printer model than the one you're trying to send to, so no template is included, you have to make your own as described here.
+
+**Before using `--bambu`, make the template once:**
+
+1. In Bambu Studio, select your printer and slice any small object (Right click -> Add Primitive -> Cube). The settings don't matter.
+2. Export the sliced plate as a `.gcode.3mf` (File → Export → Export plate sliced file).
+3. Save it as `template.gcode.3mf` in the repo root.
+
+If you have multiple printer models to use, instead name each template appropriately and use `--bambu ./printer.gcode.3mf` during generation. 
+
+The `--bambu` flag writes a `NAME.gcode.3mf` output file alongside each G-code file. It copies the template file and swaps its internal `plate_1` G-code file for the one being generated. Everything else in the template (the thumbnails, the slicer settings, the printer model) is copied over unchanged, so the printer and the app will incorrectly show the template's thumbnail, time estimate and filament use. Open the generated `NAME.gcode.3mf` file in Bambu Studio (it won't show any sliced preview) and then send it to your printer as usual (Print Plate button). Any filament mapping it asks for doesn't matter, since nothing is extruded. **Remember to disable auto bed leveling unless your pen mount is compatible with that operation.**
+
+To wrap a G-code file manually, for example after editing it by hand, run `tools/bambu_wrap.py output/letter.gcode`. Use `--template` to specify a non-default `.gcode.3mf` template file location.
 
 ## Text reflow
 
@@ -99,53 +128,6 @@ A word too wide for a line on its own is split across lines. Every line break in
 
 Pages are then simple: every line is the same pitch apart, so a page holds a fixed number of lines and the rest continue on the next.
 
-## Printer profiles
-
-G-code is written from a profile. Two are included, both commented: `profiles/ender3.toml` for a 220 × 220 mm bed, and `profiles/generic-256.toml` for the 256 × 256 mm beds most current machines use. Copy one and edit it. `--profile` takes either a name from `profiles/` or a path to a `.toml` file.
-
-> [!CRITICAL]
-> **Home your printer yourself before running any G-code.** The G-code files use absolute machine coordinates which only work if the printer knows the current X, Y and Z coordinates. Failure to do so has different consequences depending on your printer/firmware, but in some cases will absolutely crash the toolhead into the frame and grind motor gears. You can add `G28` (or `G28 X Y`) to a profile's preamble to auto-home at the start if you know your pen mount won't interfere with the homing process.
-
-The first number you will need to customize is `pen_down_z`. Home the machine, jog Z down until the pen reliably marks the paper while moving, and use that value. You can sanity check the result by "writing" ~5mm above the bed before committing to it:
-
-```
-./handwrite.py "test" --name test --format gcode --profile generic-256 --dry-run-z 5
-```
-
-Every G-code file comes with a `NAME-preview.svg`, rendered back from the G-code file itself. It shows the G-code's moves — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header. To render a preview of a G-code file on its own, for example after editing it by hand, run `tools/gcode_preview.py output/test.gcode`. It takes `--profile` to draw the bed for a file without one, and `--no-frame` to hide both rectangles.
-
-The G-code assumes the paper is laid flush against the back-left corner of the bed, the right way up, with its top at the back. That is the easiest place to line a sheet up by hand. `--paper-anchor`, or `paper_anchor` in a profile, picks a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, from X0 Y0; if your plate's edges are not where the nozzle reaches X0 and its limits, line the paper up with the nozzle's reach instead.
-
-Pens are usually mounted beside the nozzle rather than in its place. Set `pen_offset_x` and `pen_offset_y` in the profile to the pen tip's position relative to the nozzle, in mm (+X to the right, +Y toward the back). The G-code always controls the nozzle position, so the generator applies these offsets to moves so that the pen lands where the page needs it. An easy way to measure this offset is to mount the pen and press it into the paper, then move the printhead and bed until the nozzle touches the start of the pen line. Then measure the X and Y difference between the start and end of the line. 
-
-The nozzle still has to stay on the bed, so the pen cannot reach a strip as wide as the offset along the opposite side of the bed. Note that the G-code preview adds the offset back, so it shows where the pen (not the nozzle) goes relative to the bed. 
-
-No profile ever emits heater, fan or extruder commands. If your machine needs these for some reason, put them in the profile's `preamble`.
-
-`handwrite.py` does its best to refuse to write G-code that would run off the bed, if the profile declares one. Text that spans more of the page than the bed's Y travel — possible with A4 or Letter on a 220 or 256 mm bed — is cut between lines into as few lettered parts as fit, `-p1a`, `-p1b`, etc. Text that fits in one go stays in one file, even if part of it starts out of reach. Where it costs no extra part, the lines already in reach with the paper in its usual place make up a part that needs no paper move. With the default anchor that is the top of the page. For each of the others, the command line and the top of its G-code file say how far to slide the paper along Y first, in whole millimetres. The paper is never moved sideways, so it stays against the same side of the bed. The slide is measured from the edge of the bed the paper is normally laid against, for example:
-
-```
-; paper: slide the paper 25 mm away from Y0 along Y without moving it sideways, so its back edge is 25 mm past the back of the bed
-```
-
-A page too *wide* for the bed cannot be cut this way and is still refused: use a narrower `--page`, `--page fit`, or specify a custom HxW to achieve your desired outcome.
-
-`--page fit` sizes the page to the bed instead: 256 × 256 mm on `generic-256` and 220 × 220 mm on `ender3`, less the pen offset, laid against the side of the bed the pen can reach. Lines wrap to that width, longer texts continue onto `-p2`, `-p3`, ..., and nothing ever needs cutting. Lay any sheet that covers the bed with its corner in the anchor corner. It needs a profile that declares a `bed`, even for SVG output, where it shows exactly what one bed load looks like.
-
-## Bambu Lab printers
-
-Bambu Lab printers won't take a bare `.gcode` file. They take a `.gcode.3mf`, the zip that Bambu Studio writes when it slices, with the G-code inside at `Metadata/plate_1.gcode`. Bambu Studio and Handy also refuse to send a `.gcode.3mf` sliced for a different printer model, so no template is included: you make one for your own printer.
-
-**Before using `--bambu`, make the template once:**
-
-1. In Bambu Studio, select your printer and slice any small object. The settings don't matter.
-2. Export the sliced plate as a `.gcode.3mf` (File → Export → Export plate sliced file).
-3. Save it as `template.gcode.3mf` in the repo root, that file extensions is git-ignored.
-
-`--bambu` then writes a `NAME.gcode.3mf` output file alongside each G-code file. Use `--bambu PATH` to specify a different template file to use. It copies the template and swaps its internal `plate_1` G-code for the one being generated. Everything else in the template (the thumbnails, the slicer settings, the printer model) is copied over unchanged, so the printer and the app will incorrectly show the template's thumbnail, time estimate and filament use. Send the `.gcode.3mf` from Bambu Studio or Handy as usual. Any filament mapping it asks for doesn't matter, since nothing is extruded. **Remember to disable auto bed leveling unless your pen mount is compatible with that operation.**
-
-To wrap a G-code file manually, for example after editing it by hand, run `tools/bambu_wrap.py output/letter.gcode`. Use `--template` to specify a non-default `.gcode.3mf` template file location.
-
 ## How it works
 
 ```
@@ -159,23 +141,13 @@ text
                   └─ G-code: one pen-down move per stroke, from a printer profile
 ```
 
-The page is used only for its model. `handwriting_helper/model.py` is a line-for-line numpy port of the page's network, and runs its own sampling loop instead of the page's Draw button (the browser backend in `generate.py` does the same inside the page, on its globals). That matters because the page's own draw handler **scales glyphs by the character count** (`v = min(105/n, 11)`), so a 50-character line comes out about five times smaller than a 10-character one. Sampling directly yields the model's own pen offsets, in which a letter is the same size whatever line it is in.
-
-The 80 style vectors differ in size by more than 4×, so `--x-height-mm` needs to know the chosen style's size. That depends on the style alone — bias moves it by under 5% — so it is measured once per style and shipped in `handwriting_helper/styles.json`. `tools/build_style_table.py` rebuilds it (a few minutes) if the model ever changes.
-
-Measuring an x-height needs a little care, and `strokes.estimate_x_height` explains why. Removing a straight baseline fit is not enough, because real drift is not linear: the leftover wander grows with line length, and a whole-line measurement makes a 45-character sample read about 28% taller than a 9-character one even though the letters are the same size. Measuring in fixed-width windows instead holds to within 4% across those lengths.
+`handwriting_helper/model.py` is a line-for-line numpy port of the network used by the calligrapher.ai site, and runs its own sampling loop instead of the page's Draw button (the browser backend in `generate.py` does the same inside the page, on its globals). This allows the raw model output to be used, whereas the website applies several post-processing steps needed to render it nicely in a browser window. This project applies its own minimal post-processing to make each style roughly similar in size for uniform-ish output sizes (see `styles.json`).
 
 ### Limitations
 
 - The model's vocabulary is 77 printable characters; anything else is drawn as garbage and warned about. Digits in particular are the model's weakest output.
 - Every line is sampled separately, so a stray flourish or a misformed first letter is possible. Re-run with a different `--seed`, or edit the saved strokes file.
 - The model now and then leaves out punctuation, most often a full stop at the very end of a paragraph.
-
-## The offline site copy
-
-`website/` is a snapshot of calligrapher.ai taken from the [Web Archive](https://web.archive.org/web/20240924102434/https://www.calligrapher.ai/), with Google Analytics removed and `d.bin` — the 2.65 MB model — saved locally. The network itself is hand-written vanilla JavaScript, not TensorFlow.js, which is why it loads in about a second and needs no ML dependencies.
-
-`handwrite.py` serves that directory on a random local port and intercepts the `d.bin` request, so the copy needs no edits. To use it by hand instead, see `website/README.md`.
 
 ## Tests
 
@@ -186,14 +158,15 @@ tools/selftest.py --online   # also generation: reproducibility, scale, long dra
 
 ## Alternatives
 
-- If you don't mind the uniform look of a font, skip all of this and generate G-code from an [engraving font](https://www.evilmadscientist.com/2019/hershey-text-v30/) in Inkscape.
-- [otuva/handwriting-synthesis](https://github.com/otuva/handwriting-synthesis) is a TensorFlow 2 fork of the original model with pretrained weights. It is archived, and its output differs from calligrapher.ai's.
+- If you don't mind the uniform look of a font, an [engraving font](https://www.evilmadscientist.com/2019/hershey-text-v30/) is another good source of human-like strokes.
+- [otuva/handwriting-synthesis](https://github.com/otuva/handwriting-synthesis) is an archived TensorFlow 2 fork of the original model with pretrained weights.
 - [utrost/VHS](https://github.com/utrost/VHS) builds plotter handwriting from a library of hand-drawn glyphs rather than a neural net, and has its own page layout engine.
-- [vpype](https://github.com/abey79/vpype) with [vpype-gcode](https://github.com/plottertools/vpype-gcode), or [svg2gcode](https://github.com/sameer/svg2gcode), if you want to take the SVG output through a general-purpose plotter toolchain instead.
+- [vpype](https://github.com/abey79/vpype) with [vpype-gcode](https://github.com/plottertools/vpype-gcode), or [svg2gcode](https://github.com/sameer/svg2gcode), if you want to take SVG output through a general-purpose plotter toolchain instead.
 
 ## License
 
 AGPL-3.0-or-later. The `fitCurves` submodule is MIT.
 
-## TODO
-- Handle or warn about pen offset vs nozzle.
+## AI Disclaimer
+
+The current code in this repo was almost entirely vibe-coded using Claude. I haven't audited the code, only the behavior on my own printers. I did hand-edit most of the documentation in this README though. The original code I manually wrote that this is all based on is available in the `original-code` tag and associated release.

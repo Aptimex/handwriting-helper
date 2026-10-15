@@ -1,5 +1,4 @@
-# Core pipeline.
-numpy>=1.24           # runs the model, measures x-height, and the fitCurves submodule for --smooth
+numpy>=1.24
 
 # Optional: --backend browser runs the original page in headless Chromium instead.
 #     pip install playwright && playwright install chromium
