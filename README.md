@@ -52,9 +52,9 @@ Requires python 3.11 or newer. If you already cloned without `--recurse-submodul
 ./handwrite.py --file letter.txt --format svg --out-dir ~/plots
 ```
 
-Every run writes a G-code file and an SVG of the same page into `--out-dir` (default `output/` in the current directory, created if needed). They are named after the input file without its extension, or `--name`, or `handwriting` for text given on the command line. Existing files are overwritten; with `--no-overwrite` the whole set is written as `letter (1).gcode`, `letter (1).svg`, ... instead.
+Every run writes a G-code file, an SVG of the same page, and a preview of the G-code's toolpath (`NAME-preview.svg`, see [Printer profiles](#printer-profiles)) into `--out-dir` (default `output/` in the current directory, created if needed). They are named after the input file without its extension, or `--name`, or `handwriting` for text given on the command line. Existing files are overwritten; with `--no-overwrite` the whole set is written as `letter (1).gcode`, `letter (1).svg`, ... instead. `--no-preview` skips the previews.
 
-A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVGs are never cut.
+A text that runs longer than one page is split into numbered files — `letter-p1.gcode`, `letter-p2.gcode`, and so on. A page taller than the bed's Y travel is further cut, between lines, into parts lettered `letter-p1a.gcode`, `letter-p1b.gcode`, ..., each with its own `letter-p1a-preview.svg`, ... (see [Printer profiles](#printer-profiles)) so you can manually move the paper and fill an entire physical page. SVGs are never cut.
 
 Generating strokes is the slow, random part. You can save the raw strokes output and re-render them them later into SVG or G-code, with a different profile, smoothing, simplification, etc:
 
@@ -109,10 +109,9 @@ The first number you will need to customize is `pen_down_z`. Home the machine, j
 
 ```
 ./handwrite.py "test" --name test --format gcode --profile generic-256 --dry-run-z 5
-tools/gcode_preview.py output/test.gcode -o output/test.preview.svg
 ```
 
-`tools/gcode_preview.py` renders a G-code file back to SVG — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header; for a file without a bed, pass `--profile` to draw one, and `--no-frame` hides them.
+Every G-code file comes with a `NAME-preview.svg`, rendered back from the G-code file itself. It shows the G-code's moves — drawing moves in black, travel moves in red — over the bed (blue) and the paper where the file expects it (dashed amber), so you can see where the writing lands on the sheet and how the sheet sits on the bed. It is the cheapest way to catch an inverted axis, a pen that never lifts, or a page hanging off the bed. Both rectangles come from the G-code's header. To render a preview of a G-code file on its own, for example after editing it by hand, run `tools/gcode_preview.py output/test.gcode`. It takes `--profile` to draw the bed for a file without one, and `--no-frame` to hide both rectangles.
 
 The G-code assumes the paper is laid flush against the back-left corner of the bed, the right way up, with its top at the back. That is the easiest place to line a sheet up by hand. `--paper-anchor`, or `paper_anchor` in a profile, picks a different corner, an edge, or the centre of the bed. "The bed" means the rectangle the profile's `bed` gives, from X0 Y0; if your plate's edges are not where the nozzle reaches X0 and its limits, line the paper up with the nozzle's reach instead.
 

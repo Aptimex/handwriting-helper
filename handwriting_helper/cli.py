@@ -11,6 +11,7 @@ from .layout import (
 from .gcode_out import (
     ANCHORS, BedLimitError, ProfileError, bed_sections, describe_shift, load_profile,
     reachable_anchor, reachable_area, write_gcode)
+from .preview import write_preview
 from .svg_out import write_svg
 
 # Base name for the output files when the text was not read from a file.
@@ -93,7 +94,10 @@ completely locally.""")
     out.add_argument("--format", choices=("both", "gcode", "svg"), default="both",
                      help="which files to write (default: %(default)s). A text that runs to "
                           "several pages is written as NAME-p1, NAME-p2, ...; G-code for a "
-                          "page taller than the bed is cut into parts NAME-p1a, NAME-p1b, ...")
+                          "page taller than the bed is cut into parts NAME-p1a, NAME-p1b, ... "
+                          "Each G-code file gets a NAME-preview.svg of its toolpath on the bed")
+    out.add_argument("--no-preview", action="store_true",
+                     help="don't render a NAME-preview.svg of each G-code file")
     out.add_argument("--no-overwrite", action="store_true",
                      help="if any output file already exists, write the set as 'NAME (1)', "
                           "'NAME (2)', ... instead of replacing it")
@@ -352,6 +356,9 @@ def main(argv=None):
             for part, section in enumerate(sections):
                 outputs.append(("gcode", ".gcode", index, len(pages), part, len(sections),
                                 section))
+                if not args.no_preview:
+                    outputs.append(("preview", "-preview.svg", index, len(pages), part,
+                                    len(sections), None))
         if want_svg:
             outputs.append(("svg", ".svg", index, len(pages), 0, 1, None))
 
@@ -373,6 +380,12 @@ def main(argv=None):
         if kind == "svg":
             count = write_svg(page, target, **svg_options)
             log("wrote {} ({} paths)".format(target, count))
+            continue
+        if kind == "preview":
+            # Rendered from the G-code file just written, so it shows what the machine gets.
+            gcode = out_dir / (_output_stem(base, index, total, part, parts) + ".gcode")
+            write_preview(gcode, target)
+            log("wrote {}".format(target))
             continue
         page_header = header
         if total > 1:

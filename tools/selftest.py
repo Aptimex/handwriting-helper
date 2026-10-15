@@ -29,6 +29,8 @@ from handwriting_helper.layout import (
 from handwriting_helper.strokes import (
     Document, Line, estimate_x_height, paragraphs, reflow, simplify, split_pen_flags)
 from handwriting_helper import styles
+from handwriting_helper.cli import main as handwrite
+from handwriting_helper.preview import parse, parse_frame
 from handwriting_helper.svg_out import fit_beziers, write_svg
 
 FAILURES = []
@@ -331,8 +333,6 @@ def test_bed_sections():
         note = describe_shift(later, tall, profile)
         check("the slide is measured from the edge the paper is laid against",
               "{:g} mm past the back of the bed".format(later.shift_y) in note, note)
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from gcode_preview import parse_frame
         page_mm, corner, bed, _ = parse_frame(target)
         ox, oy = paper_corner(tall.width_mm, tall.height_mm, profile)
         check("the preview reads the paper and bed back from the header",
@@ -341,7 +341,6 @@ def test_bed_sections():
               (page_mm, corner, bed))
 
         # The preview adds the pen offset back, so the ink lands where it did without one.
-        from gcode_preview import parse
         offset = dict(profile, pen_offset_x=-30.0, pen_offset_y=12.0)
         plain, moved = Path(tmp) / "plain.gcode", Path(tmp) / "offset.gcode"
         write_gcode(short, plain, profile)
@@ -349,6 +348,30 @@ def test_bed_sections():
         a, b = parse(plain)[0], parse(moved, offset=parse_frame(moved)[3])[0]
         check("the preview shows the pen, not the nozzle", len(a) == len(b) and all(
             math.dist(p, q) < 1e-3 for s, t in zip(a, b) for p, q in zip(s, t)))
+
+
+def test_cli_outputs():
+    section("command line outputs")
+    strokes = ROOT / "input" / "sample.strokes.json"
+    if not strokes.is_file():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        common = ["--strokes", str(strokes), "--profile", "generic-256", "--page", "fit",
+                  "--line-pitch", "12", "--quiet", "--out-dir", tmp]
+        handwrite(common + ["--name", "t"])
+        written = sorted(f.name for f in Path(tmp).iterdir())
+        check("G-code comes with an SVG and a preview of its toolpath",
+              written == ["t-preview.svg", "t.gcode", "t.svg"], written)
+        drawn = len(parse(Path(tmp) / "t.gcode")[0])
+        check("the preview draws what the G-code draws",
+              Path(tmp, "t-preview.svg").read_text().count("<path") >= drawn, drawn)
+        handwrite(common + ["--name", "u", "--no-preview"])
+        check("--no-preview leaves the preview out",
+              not (Path(tmp) / "u-preview.svg").exists() and (Path(tmp) / "u.gcode").exists())
+        handwrite(common + ["--name", "t", "--format", "gcode", "--no-overwrite"])
+        check("--no-overwrite renames the preview with its G-code",
+              (Path(tmp) / "t (1).gcode").exists()
+              and (Path(tmp) / "t (1)-preview.svg").exists())
 
 
 def test_style_table():
@@ -440,6 +463,7 @@ def main(argv=None):
     test_profiles()
     test_output()
     test_bed_sections()
+    test_cli_outputs()
     test_style_table()
     if args.online:
         test_online(args)

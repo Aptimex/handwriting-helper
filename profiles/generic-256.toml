@@ -5,8 +5,8 @@
 # reading. Start high and work down.
 #
 # Check the motion before trusting it:
-#     ./handwrite.py "test" -o out.gcode --profile generic-256 --dry-run-z 5
-#     tools/gcode_preview.py out.gcode -o out.preview.svg
+#     ./handwrite.py "test" --name test --profile generic-256 --dry-run-z 5
+# then look at output/test-preview.svg, the toolpath drawn on the bed and paper.
 
 name = "generic-256"
 
