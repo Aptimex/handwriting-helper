@@ -39,9 +39,8 @@ preamble = [
   "G21",        # millimetres
   "G90",        # absolute positioning
   "M107",       # part fan off
-  "G28",        # home all axes -- remove if you position the pen by hand
 ]
 
 postamble = [
-  "M84",        # steppers off
+  # "M84",      # steppers off -- left out so the next file can run without re-homing
 ]

@@ -102,7 +102,10 @@ Pages are then simple: every line is the same pitch apart, so a page holds a fix
 
 G-code is written from a profile. Two are included, both commented: `profiles/ender3.toml` for a 220 × 220 mm bed, and `profiles/generic-256.toml` for the 256 × 256 mm beds most current machines use. Copy one and edit it. `--profile` takes either a name from `profiles/` or a path to a `.toml` file.
 
-The number that matters is `pen_down_z`. Home the machine, jog Z down until the pen reliably marks the paper while moving, and use that value. Then sanity check the result by "writing" 5mm above the bed before committing to it:
+> [!CRITICAL]
+> **Home your printer yourself before running any G-code.** The G-code files use absolute machine coordinates which only work if the printer knows the current X, Y and Z coordinates. Failure to do so has different consequences depending on your printer/firmware, but in some cases will absolutely crash the toolhead into the frame and grind motor gears. You can add `G28` (or `G28 X Y`) to a profile's preamble to auto-home at the start if you know your pen mount won't interfere with the homing process.
+
+The first number you will need to customize is `pen_down_z`. Home the machine, jog Z down until the pen reliably marks the paper while moving, and use that value. You can sanity check the result by "writing" ~5mm above the bed before committing to it:
 
 ```
 ./handwrite.py "test" --name test --format gcode --profile generic-256 --dry-run-z 5
