@@ -1,4 +1,4 @@
-# handwriting-helper
+# Handwriting Helper
 
 Turn text into G-code that a 3D printer can plot in a way that mimics the strokes of human handwriting. Dynamically reflows text to fit arbitrary combinations of paper and bed sizes.
 
