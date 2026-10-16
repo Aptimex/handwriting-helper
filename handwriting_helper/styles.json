@@ -1,0 +1,325 @@
+{
+ "about": "Per-style size in model units, written by tools/build_style_table.py. x_height is measured on 'nouncesomuxnecoumsanueco', advance on 'The quick brown fox jumps over the lazy dog'; each is the median of 5 draws at bias 0.75.",
+ "styles": {
+  "0": {
+   "x_height": 4.472,
+   "advance": 7.297
+  },
+  "1": {
+   "x_height": 7.285,
+   "advance": 9.821
+  },
+  "2": {
+   "x_height": 13.511,
+   "advance": 8.38
+  },
+  "3": {
+   "x_height": 6.675,
+   "advance": 7.721
+  },
+  "4": {
+   "x_height": 12.659,
+   "advance": 8.128
+  },
+  "5": {
+   "x_height": 5.726,
+   "advance": 8.292
+  },
+  "6": {
+   "x_height": 4.906,
+   "advance": 9.434
+  },
+  "7": {
+   "x_height": 3.426,
+   "advance": 7.308
+  },
+  "8": {
+   "x_height": 9.067,
+   "advance": 8.012
+  },
+  "9": {
+   "x_height": 7.855,
+   "advance": 8.068
+  },
+  "10": {
+   "x_height": 6.542,
+   "advance": 7.779
+  },
+  "11": {
+   "x_height": 5.841,
+   "advance": 8.98
+  },
+  "12": {
+   "x_height": 4.966,
+   "advance": 7.666
+  },
+  "13": {
+   "x_height": 3.982,
+   "advance": 7.946
+  },
+  "14": {
+   "x_height": 5.245,
+   "advance": 7.46
+  },
+  "15": {
+   "x_height": 10.921,
+   "advance": 8.797
+  },
+  "16": {
+   "x_height": 6.863,
+   "advance": 8.637
+  },
+  "17": {
+   "x_height": 7.705,
+   "advance": 8.25
+  },
+  "18": {
+   "x_height": 6.826,
+   "advance": 7.032
+  },
+  "19": {
+   "x_height": 3.591,
+   "advance": 7.622
+  },
+  "20": {
+   "x_height": 4.575,
+   "advance": 7.894
+  },
+  "21": {
+   "x_height": 5.762,
+   "advance": 7.506
+  },
+  "22": {
+   "x_height": 4.075,
+   "advance": 7.025
+  },
+  "23": {
+   "x_height": 7.521,
+   "advance": 9.42
+  },
+  "24": {
+   "x_height": 6.026,
+   "advance": 6.995
+  },
+  "25": {
+   "x_height": 3.491,
+   "advance": 7.348
+  },
+  "26": {
+   "x_height": 9.835,
+   "advance": 8.144
+  },
+  "27": {
+   "x_height": 3.598,
+   "advance": 7.759
+  },
+  "28": {
+   "x_height": 6.88,
+   "advance": 7.844
+  },
+  "29": {
+   "x_height": 4.896,
+   "advance": 7.422
+  },
+  "30": {
+   "x_height": 4.928,
+   "advance": 7.666
+  },
+  "31": {
+   "x_height": 3.18,
+   "advance": 7.139
+  },
+  "32": {
+   "x_height": 7.425,
+   "advance": 8.147
+  },
+  "33": {
+   "x_height": 4.664,
+   "advance": 7.766
+  },
+  "34": {
+   "x_height": 4.316,
+   "advance": 7.592
+  },
+  "35": {
+   "x_height": 13.128,
+   "advance": 8.094
+  },
+  "36": {
+   "x_height": 12.501,
+   "advance": 7.875
+  },
+  "37": {
+   "x_height": 5.868,
+   "advance": 8.399
+  },
+  "38": {
+   "x_height": 7.074,
+   "advance": 7.737
+  },
+  "39": {
+   "x_height": 7.469,
+   "advance": 8.155
+  },
+  "40": {
+   "x_height": 12.366,
+   "advance": 7.925
+  },
+  "41": {
+   "x_height": 6.078,
+   "advance": 8.098
+  },
+  "42": {
+   "x_height": 7.689,
+   "advance": 8.033
+  },
+  "43": {
+   "x_height": 5.166,
+   "advance": 8.446
+  },
+  "44": {
+   "x_height": 12.963,
+   "advance": 8.338
+  },
+  "45": {
+   "x_height": 5.721,
+   "advance": 7.596
+  },
+  "46": {
+   "x_height": 4.549,
+   "advance": 7.338
+  },
+  "47": {
+   "x_height": 6.144,
+   "advance": 8.277
+  },
+  "48": {
+   "x_height": 10.162,
+   "advance": 8.015
+  },
+  "49": {
+   "x_height": 7.407,
+   "advance": 7.503
+  },
+  "50": {
+   "x_height": 6.666,
+   "advance": 8.691
+  },
+  "51": {
+   "x_height": 10.46,
+   "advance": 7.779
+  },
+  "52": {
+   "x_height": 8.081,
+   "advance": 8.431
+  },
+  "53": {
+   "x_height": 5.424,
+   "advance": 7.613
+  },
+  "54": {
+   "x_height": 5.156,
+   "advance": 9.695
+  },
+  "55": {
+   "x_height": 4.085,
+   "advance": 7.529
+  },
+  "56": {
+   "x_height": 7.257,
+   "advance": 8.98
+  },
+  "57": {
+   "x_height": 7.865,
+   "advance": 7.888
+  },
+  "58": {
+   "x_height": 4.926,
+   "advance": 8.103
+  },
+  "59": {
+   "x_height": 6.552,
+   "advance": 7.864
+  },
+  "60": {
+   "x_height": 5.269,
+   "advance": 7.657
+  },
+  "61": {
+   "x_height": 12.861,
+   "advance": 7.668
+  },
+  "62": {
+   "x_height": 4.015,
+   "advance": 7.773
+  },
+  "63": {
+   "x_height": 9.587,
+   "advance": 7.915
+  },
+  "64": {
+   "x_height": 5.491,
+   "advance": 8.787
+  },
+  "65": {
+   "x_height": 5.287,
+   "advance": 8.076
+  },
+  "66": {
+   "x_height": 4.372,
+   "advance": 7.924
+  },
+  "67": {
+   "x_height": 7.172,
+   "advance": 8.196
+  },
+  "68": {
+   "x_height": 5.875,
+   "advance": 7.659
+  },
+  "69": {
+   "x_height": 5.359,
+   "advance": 8.373
+  },
+  "70": {
+   "x_height": 6.289,
+   "advance": 8.16
+  },
+  "71": {
+   "x_height": 8.316,
+   "advance": 8.663
+  },
+  "72": {
+   "x_height": 5.351,
+   "advance": 8.187
+  },
+  "73": {
+   "x_height": 8.235,
+   "advance": 7.749
+  },
+  "74": {
+   "x_height": 5.555,
+   "advance": 7.874
+  },
+  "75": {
+   "x_height": 5.39,
+   "advance": 7.334
+  },
+  "76": {
+   "x_height": 8.602,
+   "advance": 8.74
+  },
+  "77": {
+   "x_height": 6.961,
+   "advance": 7.949
+  },
+  "78": {
+   "x_height": 7.094,
+   "advance": 8.671
+  },
+  "79": {
+   "x_height": 8.76,
+   "advance": 7.63
+  }
+ }
+}

@@ -1,0 +1,52 @@
+# Generic profile for a 256 x 256 mm bed, which most current machines in that class use.
+#
+# pen_down_z is the one number you must set yourself: it depends entirely on how your pen is
+# mounted. Home the machine, jog Z down until the pen just marks the paper, and use that
+# reading. Start high and work down.
+#
+# Check the motion before trusting it:
+#     ./handwrite.py "test" --name test --profile generic-256 --dry-run-z 5
+# then look at output/test-preview.svg, the toolpath drawn on the bed and paper.
+
+name = "generic-256"
+
+pen_down_z   = 1.0      # pen touches the paper -- measure this for your own pen holder
+pen_up_z     = 3.5      # clears the paper between strokes
+safe_z       = 20.0     # clear of everything, used at the start and the end
+
+feed_draw    = 2400     # mm/min while drawing
+feed_travel  = 9000     # mm/min between strokes
+feed_z       = 1200     # mm/min for pen lifts
+
+# The paper is laid flush against a corner of the bed, X0..X Y0..Y as `bed` gives it,
+# with "top" the back of the bed. If the plate's edge isn't where the nozzle reaches X0 or
+# its far limit, use the nozzle's reach rather than the plate's edge to place the paper.
+paper_anchor = "top-left"   # lay the paper against this corner of the bed; also
+                            # top-right, bottom-left, bottom-right, center, ...
+bed          = [256.0, 256.0]   # refuse to write G-code that leaves the bed
+park         = [128.0, 250.0]   # back center, out of the way
+
+flip_y       = true     # page top is away from you, the usual way to lay paper on a bed
+
+# Where the pen tip is relative to the nozzle, in mm: + is toward X max (the right) and
+# Y max (the back of the bed). Measure from the nozzle tip to the pen tip. The G-code moves
+# the nozzle so the pen lands where the page needs it, and keeps the nozzle within `bed`, so
+# a pen mounted 30 mm to the left cannot reach the 30 mm along the right of the bed.
+pen_offset_x = 0.0
+pen_offset_y = 0.0
+
+pen_dwell_ms = 0        # raise to ~100 if a spring-loaded pen needs time to settle
+
+# A 256 x 256 bed fits A5 (148 x 210) comfortably. Taller pages such as A4 (210 x 297) or
+# Letter (216 x 279) are written in parts (-p1a, -p1b, ...) with the paper slid along Y between
+# them; each part's G-code says where the paper goes.
+
+preamble = [
+  "G21",        # millimetres
+  "G90",        # absolute positioning
+  "M107",       # part fan off
+]
+
+postamble = [
+  # "M84",      # steppers off -- left out so the next file can run without re-homing
+]

@@ -1,0 +1,46 @@
+# Example profile: Creality Ender 3 with a pen holder on the hotend.
+#
+# pen_down_z is the single most important number here, and it depends on how your pen is
+# mounted. Find it by homing, jogging Z down until the pen just marks the paper, and reading
+# the value off the display. Start high and work down.
+#
+# Run `./handwrite.py ... --dry-run-z 5` first to watch the motion without touching paper.
+
+name = "ender3"
+
+pen_down_z   = 0.6      # pen touches the paper
+pen_up_z     = 3.0      # clears the paper between strokes
+safe_z       = 15.0     # clear of everything, used at start and end
+
+feed_draw    = 1500     # mm/min while drawing; slow enough that ink keeps up
+feed_travel  = 6000     # mm/min between strokes
+feed_z       = 900      # mm/min for pen lifts
+
+# The paper is laid flush against a corner of the bed, X0..X Y0..Y as `bed` gives it,
+# with "top" the back of the bed. If the plate's edge isn't where the nozzle reaches X0 or
+# its far limit, use the nozzle's reach rather than the plate's edge to place the paper.
+paper_anchor = "top-left"   # lay the paper against this corner of the bed; also
+                            # top-right, bottom-left, bottom-right, center, ...
+bed          = [220.0, 220.0]   # refuse to write G-code that leaves the bed
+park         = [0.0, 200.0]     # somewhere out of the way to finish
+
+flip_y       = true     # page top is away from you, the usual way to lay paper on a bed
+
+# Where the pen tip is relative to the nozzle, in mm: + is toward X max (the right) and
+# Y max (the back of the bed). Measure from the nozzle tip to the pen tip. The G-code moves
+# the nozzle so the pen lands where the page needs it, and keeps the nozzle within `bed`, so
+# a pen mounted 30 mm to the left cannot reach the 30 mm along the right of the bed.
+pen_offset_x = 0.0
+pen_offset_y = 0.0
+
+pen_dwell_ms = 0        # raise to ~100 if a spring-loaded pen needs time to settle
+
+preamble = [
+  "G21",        # millimetres
+  "G90",        # absolute positioning
+  "M107",       # part fan off
+]
+
+postamble = [
+  # "M84",      # steppers off -- left out so the next file can run without re-homing
+]
