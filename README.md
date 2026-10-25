@@ -14,7 +14,7 @@ The handwriting comes from the model used by [calligrapher.ai](https://www.calli
 > This program outputs raw G-code. If you pick the wrong settings, this G-code may cause your printer to attempt movement outside its physical limits, causing damage. Use at your own risk.
 
 > [!CAUTION]
-> **Home your printer yourself before running any G-code.** The G-code files use absolute machine coordinates which only work if the printer knows the current X, Y and Z coordinates. Failure to home first has different consequences depending on your printer/firmware, but in some cases will absolutely crash the toolhead into the frame and grind motor gears. You can add `G28` (or `G28 X Y`) to a profile's preamble to auto-home at the start if you know your pen mount won't interfere with the homing process.
+> **Home your printer yourself before running any G-code.** The G-code files use absolute machine coordinates which only work if the printer knows the current X, Y and Z coordinates. Failure to home first has different consequences depending on your printer/firmware, but in some cases will absolutely **crash the toolhead into the frame** and grind motor gears. You can add `G28` (or `G28 X Y`) to a profile's preamble to auto-home at the start if you know your pen mount won't interfere with the homing process.
 
 ## Install
 
